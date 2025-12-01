@@ -1,5 +1,6 @@
 from typing import Dict, List, Any
 from datetime import datetime
+import re
 
 from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
 
@@ -20,6 +21,18 @@ class RoleplayWorkflow(BaseWorkflow):
             
             turn_count = len(ctx.state.answers)
             
+            last_messages = ""
+            if ctx.state.answers:
+                last_messages = "\n# Recent Conversation (last 3 turns)\n"
+                for ans in ctx.state.answers[-3:]:
+                    last_messages += f"Student: {ans.get('user_message', '')[:100]}...\n"
+                    last_messages += f"You: {ans.get('agent_response', '')[:100]}...\n\n"
+            
+            progress_notes = ctx.state.custom_data.get('progress_notes', [])
+            progress_text = ""
+            if progress_notes:
+                progress_text = "\n# What has been accomplished:\n" + "\n".join(f"- {note}" for note in progress_notes[-5:])
+            
             return f"""You are participating in a role-play simulation.
 
 # Your Role
@@ -39,9 +52,21 @@ class RoleplayWorkflow(BaseWorkflow):
 
 Current turn: {turn_count + 1}
 
-Stay in character. Respond naturally to the student's actions and words.
-Do not break the fourth wall.
-Follow the behavior rules strictly."""
+{last_messages}
+
+{progress_text}
+
+IMPORTANT INSTRUCTIONS:
+1. Stay in character at all times
+2. Respond naturally to the student's actions and words
+3. DO NOT repeat the same question - if student answered, move forward in the scenario
+4. Follow the scenario flow step by step
+5. Track progress and advance through the simulation
+6. If student demonstrates understanding or completes a task, acknowledge it and move to the next part
+7. Avoid circular conversations - each turn should make progress
+8. Do not break the fourth wall
+
+CRITICAL: If you notice you're asking similar questions repeatedly, STOP and move to the next stage of the scenario."""
         
         return Agent[WorkflowContext](
             name="RoleplayAgent",
@@ -58,7 +83,10 @@ Follow the behavior rules strictly."""
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Role-play завершено."
+                return "Role-play завершено. Дякую за участь!"
+            
+            if not state.custom_data.get('progress_notes'):
+                state.custom_data['progress_notes'] = []
             
             context = WorkflowContext(state=state)
             
@@ -66,36 +94,87 @@ Follow the behavior rules strictly."""
             result = await Runner.run(agent, user_message, context=context)
             response = result.final_output_as(str)
             
+            turn_number = len(state.answers) + 1
             state.answers.append({
                 "user_message": user_message,
                 "agent_response": response,
                 "timestamp": datetime.now().isoformat(),
-                "turn": len(state.answers) + 1
+                "turn": turn_number
             })
-            await xano.save_workflow_state(state)
+            
+            self._update_progress_tracking(state, user_message, response)
             
             finish_conditions = specs.get('finish_dialogue_conditions', '')
-            if self._check_finish_conditions(state, finish_conditions):
+            should_finish = self._check_finish_conditions(state, finish_conditions, response)
+            
+            if should_finish:
                 state.status = "finished"
                 await xano.save_workflow_state(state)
                 from models import ChatStatus
                 await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                return response + "\n\n[Simulation завершено]"
+                return response + "\n\n✅ Симуляцію завершено."
+            
+            await xano.save_workflow_state(state)
             
             return response
     
-    def _check_finish_conditions(self, state: WorkflowState, conditions: str) -> bool:
+    def _update_progress_tracking(self, state: WorkflowState, user_message: str, agent_response: str):
+        keywords_progress = [
+            'чудово', 'добре', 'правильно', 'згоден', 'зрозумів',
+            'наступний', 'тепер', 'переходимо', 'good', 'great', 'correct', 'next'
+        ]
+        
+        response_lower = agent_response.lower()
+        if any(keyword in response_lower for keyword in keywords_progress):
+            progress_notes = state.custom_data.get('progress_notes', [])
+            progress_notes.append(f"Turn {len(state.answers)}: Progress made")
+            state.custom_data['progress_notes'] = progress_notes[-10:]
+    
+    def _check_finish_conditions(self, state: WorkflowState, conditions: str, last_response: str) -> bool:
         if not conditions:
             return False
         
         turn_count = len(state.answers)
         
-        if "turns" in conditions.lower():
-            import re
-            match = re.search(r'(\d+)\s*turns?', conditions.lower())
-            if match:
-                max_turns = int(match.group(1))
-                return turn_count >= max_turns
+        if turn_count < 3:
+            return False
+        
+        max_turns = 20
+        turn_match = re.search(r'(\d+)[–\-\s]*(хвилин|turns?|exchanges?)', conditions.lower())
+        if turn_match:
+            number = int(turn_match.group(1))
+            if 'хвилин' in turn_match.group(2):
+                max_turns = max(number * 2, 10)
+            else:
+                max_turns = number
+        
+        if turn_count >= max_turns:
+            return True
+        
+        completion_phrases = [
+            'завершено', 'підсумок', 'дякую за сесію', 'це все',
+            'completed', 'finished', 'that concludes', 'thank you for',
+            'на цьому завершуємо', 'це завершує нашу розмову'
+        ]
+        
+        response_lower = last_response.lower()
+        if any(phrase in response_lower for phrase in completion_phrases):
+            return True
+        
+        if 'finished' in conditions.lower() or 'phrase' in conditions.lower():
+            conditions_lower = conditions.lower()
+            if 'student' in conditions_lower and any(phrase in conditions_lower for phrase in ['підтверд', 'скаж', 'фраз']):
+                last_answers = [ans.get('user_message', '').lower() for ans in state.answers[-3:]]
+                
+                confirmation_words = ['зрозумів', 'зрозуміла', 'дякую', 'так', 'готов', 'готова', 'finished', 'understood']
+                if any(any(word in answer for word in confirmation_words) for answer in last_answers):
+                    return True
+        
+        if turn_count >= 5:
+            last_agent_responses = [ans.get('agent_response', '') for ans in state.answers[-3:]]
+            
+            if len(set(resp[:50] for resp in last_agent_responses)) <= 1:
+                return True
         
         return False
     
@@ -142,7 +221,12 @@ Follow the behavior rules strictly."""
 # Evaluation Criteria
 {criteria_text}
 
-Evaluate the student's performance in the role-play based on the criteria."""
+# Additional Context
+Total turns: {len(ctx.workflow_state.answers)}
+Status: {ctx.workflow_state.status}
+
+Evaluate the student's performance in the role-play based on the criteria.
+Consider both the quality of responses and whether the conversation progressed naturally without getting stuck."""
             
             agent = Agent[EvaluationContext](
                 name="RoleplayEvaluator",

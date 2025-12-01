@@ -1,0 +1,109 @@
+from typing import Dict, List, Any
+from datetime import datetime
+
+from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
+
+from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContext
+
+
+class CustomWorkflow(BaseWorkflow):
+    
+    def create_assistant_agent(self, context: WorkflowContext, instructions: str, model: str) -> Agent[WorkflowContext]:
+        def agent_instructions(run_context: RunContextWrapper[WorkflowContext], _agent: Agent):
+            return instructions
+        
+        return Agent[WorkflowContext](
+            name="CustomAssistant",
+            instructions=agent_instructions,
+            model=model,
+            model_settings=ModelSettings(temperature=0.7, max_tokens=1024)
+        )
+    
+    async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
+        with trace(f"Custom-{ub_id}"):
+            specifications = self.parse_specifications(block)
+            state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
+            
+            if state.status == "finished":
+                return "Чат завершено."
+            
+            context = WorkflowContext(state=state)
+            
+            instructions = block.get("int_instructions", "")
+            specs_text = "\n\n# Specifications:\n"
+            for spec in specifications:
+                specs_text += f"{spec}\n"
+            
+            full_instructions = instructions + specs_text
+            
+            assistant = self.create_assistant_agent(context, full_instructions, template.get("model", "gpt-4o"))
+            result = await Runner.run(assistant, user_message, context=context)
+            response = result.final_output_as(str)
+            
+            state.answers.append({
+                "user_message": user_message,
+                "assistant_response": response,
+                "timestamp": datetime.now().isoformat()
+            })
+            await xano.save_workflow_state(state)
+            
+            return response
+    
+    async def run_evaluation(
+        self,
+        ub_id: int,
+        workflow_state: WorkflowState,
+        eval_instructions: str,
+        criteria: List[Dict[str, Any]],
+        model: str
+    ) -> str:
+        with trace(f"CustomEval-{ub_id}"):
+            context = EvaluationContext(
+                workflow_state=workflow_state,
+                eval_instructions=eval_instructions,
+                criteria=criteria
+            )
+            
+            def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
+                ctx = run_context.context
+
+                criteria_text = ""
+                for i, crit in enumerate(ctx.criteria):
+                    criteria_text += f"\n## Criterion {i+1}"
+                    if crit.get('criterion_name'):
+                        criteria_text += f": {crit['criterion_name']}"
+                    criteria_text += f"\nMax Points: {crit.get('max_points', 0)}\n"
+                    if crit.get('summary_instructions'):
+                        criteria_text += f"Summary: {crit['summary_instructions']}\n"
+                    if crit.get('grading_instructions'):
+                        criteria_text += f"Grading: {crit['grading_instructions']}\n"
+                    criteria_text += "\n"
+
+                conversation_text = ""
+                for i, ans in enumerate(ctx.workflow_state.answers):
+                    conversation_text += f"\n{'='*60}\n"
+                    conversation_text += f"Exchange {i+1}:\n"
+                    conversation_text += f"{'='*60}\n\n"
+                    conversation_text += f"**User:** {ans.get('user_message', 'N/A')}\n"
+                    conversation_text += f"**Assistant:** {ans.get('assistant_response', 'N/A')}\n\n"
+                
+                return f"""{ctx.eval_instructions}
+
+# Conversation History
+{conversation_text}
+
+# Evaluation Criteria
+{criteria_text}
+
+Evaluate the conversation based on the criteria provided."""
+            
+            agent = Agent[EvaluationContext](
+                name="CustomEvaluator",
+                instructions=agent_instructions,
+                model=model,
+                model_settings=ModelSettings(temperature=0.3, max_tokens=2048)
+            )
+            
+            result = await Runner.run(agent, "", context=context)
+            
+            return result.final_output_as(str)

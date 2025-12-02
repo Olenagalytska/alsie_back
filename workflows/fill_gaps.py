@@ -30,25 +30,27 @@ class FillGapsWorkflow(BaseWorkflow):
                 if not student_answer or len(student_answer.strip()) < 5:
                     return "The student has not provided a proper answer yet. Wait for their full response."
                 
-                if 'yes' in student_answer.lower() or 'так' in student_answer.lower():
-                    return "Great! Would you like to try the next assignment?"
-                
                 return f"""You are an English tutor checking a student's answer.
 
 # Learning Goal
 {learning_goal}
 
-# Assignment Format Reference
-{assignment_sample}
+# Assignment that was given
+{last_answer.get('assignment', '')}
 
 # Student's Answer
 {student_answer}
 
-Check each gap:
-- If correct: mark ✅
-- If incorrect: show ❌, provide correct answer and brief explanation
+Check each gap carefully:
+- If ALL gaps are correct: say "✅ Excellent! All answers are correct." and IMMEDIATELY present the next assignment
+- If there are errors: 
+  * Show which gaps are wrong with ❌
+  * Provide correct answers and brief explanations
+  * Then IMMEDIATELY present the next assignment
 
-After feedback, ask: "Would you like to try the next assignment?"
+DO NOT ask "would you like to continue" - always move to the next assignment automatically.
+
+Current progress: Assignment {current_assignment_index + 1}/10 completed. Now presenting Assignment {current_assignment_index + 2}/10.
 
 Be supportive and educational."""
             else:
@@ -64,10 +66,13 @@ Be supportive and educational."""
 {additional_info}
 
 Generate a NEW fill-in-the-gap assignment following the format of the sample.
+The assignment should be about: {additional_info[:200]}
+
 Present it clearly with numbered gaps (1. ___, 2. ___, etc).
+Make it challenging but appropriate for B2 level.
 Wait for the student's full answer before providing feedback.
 
-Assignment #{current_assignment_index + 1}"""
+**Assignment #{current_assignment_index + 1}**"""
         
         return Agent[WorkflowContext](
             name="FillGapsTutor",
@@ -101,7 +106,7 @@ Evaluate:
 Return JSON:
 {{
   "all_correct": true/false,
-  "errors": ["gap 1: should be X not Y", ...],
+  "errors": ["gap 1: should be X", "gap 2: should be Y", ...],
   "feedback": "overall feedback"
 }}"""
         
@@ -140,36 +145,6 @@ Return JSON:
             last_answer = state.answers[-1] if state.answers else {}
             
             if last_answer and not last_answer.get('graded'):
-                user_lower = user_message.lower().strip()
-                
-                if user_lower in ['yes', 'y', 'так', 'да', 'next', 'continue']:
-                    state.current_question_index += 1
-                    
-                    if state.current_question_index >= 10:
-                        state.status = "finished"
-                        await xano.save_workflow_state(state)
-                        from models import ChatStatus
-                        await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                        return "You have completed all assignments. Excellent work!"
-                    
-                    last_answer['graded'] = True
-                    await xano.save_workflow_state(state)
-                    
-                    tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                    result = await Runner.run(tutor, "", context=context)
-                    response = result.final_output_as(str)
-                    
-                    state.answers.append({
-                        "assignment_index": state.current_question_index,
-                        "assignment": response,
-                        "answer": "",
-                        "timestamp": datetime.now().isoformat(),
-                        "graded": False
-                    })
-                    await xano.save_workflow_state(state)
-                    
-                    return response
-                
                 last_answer['answer'] = user_message
                 last_answer['timestamp'] = datetime.now().isoformat()
                 
@@ -180,11 +155,34 @@ Return JSON:
                 last_answer['evaluation'] = evaluation
                 last_answer['graded'] = True
                 
+                state.current_question_index += 1
+                
+                if state.current_question_index >= 10:
+                    state.status = "finished"
+                    await xano.save_workflow_state(state)
+                    from models import ChatStatus
+                    await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
+                    
+                    tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                    result = await Runner.run(tutor, "", context=context)
+                    feedback = result.final_output_as(str)
+                    
+                    return feedback + "\n\n🎉 You have completed all 10 assignments. Excellent work! The test is finished."
+                
                 await xano.save_workflow_state(state)
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                 result = await Runner.run(tutor, "", context=context)
                 response = result.final_output_as(str)
+                
+                state.answers.append({
+                    "assignment_index": state.current_question_index,
+                    "assignment": response,
+                    "answer": "",
+                    "timestamp": datetime.now().isoformat(),
+                    "graded": False
+                })
+                await xano.save_workflow_state(state)
                 
                 return response
             

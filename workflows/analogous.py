@@ -18,7 +18,12 @@ class AnalogousWorkflow(BaseWorkflow):
             examples = specs.get('examples', '')
             
             current_assignment_index = ctx.state.current_question_index
-            topic = ctx.state.custom_data.get('topic', '')
+            
+            # Отримуємо тему з першої відповіді
+            topic = ""
+            if ctx.state.answers:
+                first_answer = ctx.state.answers[0]
+                topic = first_answer.get('topic', '')
             
             last_answer = ctx.state.answers[-1] if ctx.state.answers else {}
             
@@ -133,81 +138,138 @@ Return JSON:
     
     async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
         with trace(f"Analogous-{ub_id}"):
+            # DEBUG: Логування вхідних даних
+            print(f"\n{'='*70}")
+            print(f"🔍 ANALOGOUS WORKFLOW DEBUG - UB_ID: {ub_id}")
+            print(f"{'='*70}")
+            print(f"📥 User message: '{user_message}'")
+            
             specifications = self.parse_specifications(block)
             specs = specifications[0] if specifications else {}
             
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
+            
+            print(f"📊 State loaded:")
+            print(f"   - current_question_index: {state.current_question_index}")
+            print(f"   - status: {state.status}")
+            print(f"   - answers count: {len(state.answers)}")
+            if state.answers:
+                first = state.answers[0]
+                last = state.answers[-1]
+                print(f"   - first answer.topic: '{first.get('topic', 'NOT SET')}'")
+                print(f"   - last answer.answer: '{last.get('answer', '')}'")
+                print(f"   - last answer.graded: {last.get('graded', False)}")
             
             if state.status == "finished":
                 return "Assignments завершено. Дякую за роботу!"
             
             context = WorkflowContext(state=state)
             
-            if not state.custom_data.get('topic_chosen'):
-                state.custom_data['topic'] = user_message
-                state.custom_data['topic_chosen'] = True
+            # ПЕРШИЙ КРОК: Вибір теми (тільки якщо answers порожній)
+            if len(state.answers) == 0:
+                print(f"✅ BRANCH 1: Choosing topic (first interaction)")
+                
+                # Зберігаємо тему в першій відповіді
+                state.answers.append({
+                    "assignment_index": 0,
+                    "topic": user_message,  # Зберігаємо тему тут!
+                    "assignment": "",
+                    "answer": "",
+                    "timestamp": datetime.now().isoformat(),
+                    "graded": False
+                })
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                 result = await Runner.run(tutor, "", context=context)
                 response = result.final_output_as(str)
                 
-                state.answers.append({
-                    "assignment_index": state.current_question_index,
-                    "assignment": response,
-                    "answer": "",
-                    "timestamp": datetime.now().isoformat(),
-                    "graded": False
-                })
+                # Оновлюємо assignment
+                state.answers[0]['assignment'] = response
+                
+                print(f"💾 Saving state with topic: '{user_message}'")
                 await xano.save_workflow_state(state)
                 
+                print(f"{'='*70}\n")
                 return response
             
+            # ДРУГИЙ КРОК: Обробка відповіді студента
             last_answer = state.answers[-1] if state.answers else {}
             
-            if last_answer and not last_answer.get('graded'):
+            # Якщо є неоцінений assignment - це відповідь студента
+            if last_answer and not last_answer.get('graded') and not last_answer.get('answer'):
+                print(f"✅ BRANCH 2: Processing student answer")
+                print(f"   Current answer field: '{last_answer.get('answer', '')}'")
+                
+                # КРИТИЧНО: Зберігаємо відповідь студента
                 last_answer['answer'] = user_message
                 last_answer['timestamp'] = datetime.now().isoformat()
                 
+                print(f"   ✏️ Set answer to: '{last_answer['answer']}'")
+                
+                # Оцінюємо відповідь
                 evaluator = self.create_evaluator_agent(context, template.get("model", "gpt-4o"))
                 eval_result = await Runner.run(evaluator, "", context=context)
                 evaluation = eval_result.final_output.model_dump()
                 
+                print(f"   📊 Evaluation: correct={evaluation.get('correct')}")
+                
                 last_answer['evaluation'] = evaluation
                 last_answer['graded'] = True
                 
+                # Збільшуємо індекс для наступного assignment
                 state.current_question_index += 1
                 
+                # Зберігаємо стан з відповіддю та оцінкою
+                print(f"💾 Saving state with graded answer")
                 await xano.save_workflow_state(state)
                 
+                # Генеруємо наступний assignment з фідбеком
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"), evaluation)
                 result = await Runner.run(tutor, "", context=context)
                 response = result.final_output_as(str)
                 
+                # Отримуємо тему з першої відповіді
+                topic = state.answers[0].get('topic', '')
+                
+                # Додаємо новий assignment для наступної відповіді
                 state.answers.append({
                     "assignment_index": state.current_question_index,
+                    "topic": topic,  # Копіюємо тему в кожну відповідь
                     "assignment": response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "graded": False
                 })
+                print(f"💾 Saving state with new assignment (index {state.current_question_index})")
                 await xano.save_workflow_state(state)
                 
+                print(f"{'='*70}\n")
                 return response
             
+            # ТРЕТІЙ КРОК: Якщо вже є оцінений assignment - генеруємо новий
             else:
+                print(f"✅ BRANCH 3: Creating new assignment (fallback)")
+                print(f"   Reason: graded={last_answer.get('graded')}, answer='{last_answer.get('answer', '')}'")
+                
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                 result = await Runner.run(tutor, "", context=context)
                 response = result.final_output_as(str)
                 
+                # Отримуємо тему з першої відповіді
+                topic = state.answers[0].get('topic', '') if state.answers else ''
+                
                 state.answers.append({
                     "assignment_index": state.current_question_index,
+                    "topic": topic,
                     "assignment": response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "graded": False
                 })
+                print(f"💾 Saving state with new assignment (index {state.current_question_index})")
                 await xano.save_workflow_state(state)
                 
+                print(f"{'='*70}\n")
                 return response
     
     def _format_feedback(self, evaluation: Dict, student_answer: str) -> str:
@@ -241,18 +303,31 @@ Return JSON:
             def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
                 ctx = run_context.context
 
+                # DEBUG
+                print(f"\n🔍 EVALUATION DEBUG:")
+                print(f"   Total answers in state: {len(ctx.workflow_state.answers)}")
+                
                 assignments_text = ""
                 completed_count = 0
                 correct_count = 0
                 
                 for i, ans in enumerate(ctx.workflow_state.answers):
-                    if ans.get('answer') and ans.get('graded'):
+                    answer_text = ans.get('answer', '')
+                    graded = ans.get('graded', False)
+                    
+                    print(f"   Answer {i}:")
+                    print(f"     - has answer: {bool(answer_text)}")
+                    print(f"     - answer length: {len(answer_text)}")
+                    print(f"     - graded: {graded}")
+                    
+                    # Включаємо ВСІ відповіді, які мають текст (навіть якщо не graded)
+                    if answer_text:
                         completed_count += 1
                         assignments_text += f"\n{'='*60}\n"
                         assignments_text += f"Assignment {ans.get('assignment_index', i) + 1}:\n"
                         assignments_text += f"{'='*60}\n\n"
                         assignments_text += f"**Task:** {ans.get('assignment', 'N/A')}\n\n"
-                        assignments_text += f"**Student Answer:** {ans.get('answer', 'N/A')}\n\n"
+                        assignments_text += f"**Student Answer:** {answer_text}\n\n"
                         
                         evaluation = ans.get('evaluation', {})
                         if evaluation:
@@ -268,7 +343,17 @@ Return JSON:
                                         assignments_text += f"  - {error}\n"
                             if evaluation.get('feedback'):
                                 assignments_text += f"**Feedback:** {evaluation.get('feedback')}\n"
+                        else:
+                            assignments_text += f"**Result:** ⚠️ Not yet evaluated\n"
+                        
                         assignments_text += "\n"
+                
+                print(f"   Completed count: {completed_count}")
+                print(f"   Assignments text length: {len(assignments_text)}")
+                
+                if completed_count == 0:
+                    print(f"   ⚠️ NO ASSIGNMENTS TO EVALUATE!")
+                    return "No completed assignments found. The student hasn't provided any answers yet."
 
                 criteria_text = ""
                 for i, crit in enumerate(ctx.criteria):

@@ -10,7 +10,28 @@ class CustomWorkflow(BaseWorkflow):
     
     def create_assistant_agent(self, context: WorkflowContext, instructions: str, model: str) -> Agent[WorkflowContext]:
         def agent_instructions(run_context: RunContextWrapper[WorkflowContext], _agent: Agent):
-            return instructions
+            ctx = run_context.context
+            
+            conversation_history = ""
+            if ctx.state.answers:
+                conversation_history = "\n\n# CONVERSATION HISTORY (what has already been discussed):\n"
+                for i, ans in enumerate(ctx.state.answers, 1):
+                    conversation_history += f"\nTurn {i}:\n"
+                    conversation_history += f"Student: {ans.get('user_message', '')}\n"
+                    conversation_history += f"You: {ans.get('assistant_response', '')}\n"
+                
+                conversation_history += "\n\nIMPORTANT: Review this conversation history carefully. DO NOT repeat questions or topics already covered. Move forward naturally based on what the student already knows.\n"
+            
+            return f"""{instructions}
+
+{conversation_history}
+
+Remember:
+- Be flexible and conversational, not rigid
+- If the student says they understand or want to move on, progress to the next topic
+- Avoid repeating the same questions
+- Keep responses natural and engaging
+- Follow the student's pace"""
         
         return Agent[WorkflowContext](
             name="CustomAssistant",
@@ -30,9 +51,15 @@ class CustomWorkflow(BaseWorkflow):
             context = WorkflowContext(state=state)
             
             instructions = block.get("int_instructions", "")
-            specs_text = "\n\n# Specifications:\n"
-            for spec in specifications:
-                specs_text += f"{spec}\n"
+            specs_text = ""
+            if specifications:
+                specs_text = "\n\n# Specifications:\n"
+                for spec in specifications:
+                    if isinstance(spec, dict):
+                        for key, value in spec.items():
+                            specs_text += f"{key}: {value}\n"
+                    else:
+                        specs_text += f"{spec}\n"
             
             full_instructions = instructions + specs_text
             

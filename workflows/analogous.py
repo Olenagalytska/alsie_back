@@ -9,7 +9,7 @@ from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContex
 
 class AnalogousWorkflow(BaseWorkflow):
     
-    def create_tutor_agent(self, context: WorkflowContext, specs: Dict, model: str) -> Agent[WorkflowContext]:
+    def create_tutor_agent(self, context: WorkflowContext, specs: Dict, model: str, last_evaluation: Dict = None) -> Agent[WorkflowContext]:
         def agent_instructions(run_context: RunContextWrapper[WorkflowContext], _agent: Agent):
             ctx = run_context.context
             
@@ -18,14 +18,9 @@ class AnalogousWorkflow(BaseWorkflow):
             examples = specs.get('examples', '')
             
             current_assignment_index = ctx.state.current_question_index
+            topic = ctx.state.custom_data.get('topic', '')
             
             last_answer = ctx.state.answers[-1] if ctx.state.answers else {}
-            
-            if not ctx.state.custom_data.get('topic_chosen'):
-                return """Hello! Which topic would you like to practice today?
-For example: business, job interviews, hobbies, travel, daily life, or something else?"""
-            
-            topic = ctx.state.custom_data.get('topic', '')
             
             if last_answer and last_answer.get('graded'):
                 evaluation = last_answer.get('evaluation', {})
@@ -34,27 +29,38 @@ For example: business, job interviews, hobbies, travel, daily life, or something
                 feedback_parts = []
                 
                 if evaluation.get('correct'):
-                    feedback_parts.append("✅ Correct! Well done.")
+                    feedback_parts.append("✅ Excellent! All answers are correct.")
                 else:
-                    feedback_parts.append("Let me check your answer:\n")
+                    feedback_parts.append("Let me check your answers:\n")
                     for error in evaluation.get('errors', []):
                         feedback_parts.append(f"❌ {error}")
-                    if evaluation.get('feedback'):
-                        feedback_parts.append(f"\n{evaluation['feedback']}")
+                    feedback_parts.append(f"\n{evaluation.get('feedback', '')}")
                 
-                feedback_parts.append("\n\nWould you like to continue with another assignment?")
+                feedback_parts.append(f"\n**Assignment #{current_assignment_index + 1}**\n")
                 
-                return "\n".join(feedback_parts)
+                return f"""You are an English tutor providing feedback and presenting the next assignment.
+
+# Student's Previous Answer
+{student_answer}
+
+# Evaluation Result
+{chr(10).join(feedback_parts)}
+
+Now generate and present the NEXT assignment (#{current_assignment_index + 1}) following the format.
+
+# Learning Goal
+{learning_goal}
+
+# Assignment Format
+{examples}
+
+# Topic
+{topic}
+
+Present the new assignment clearly."""
             
-            elif last_answer and not last_answer.get('graded') and not last_answer.get('answer'):
-                return f"""You are an English tutor waiting for the student's answer.
-
-The student was given this assignment:
-{last_answer.get('assignment', '')}
-
-They haven't provided their answer yet. Wait for their response.
-Do NOT generate a new assignment.
-Just wait for the student to provide their complete answer."""
+            elif last_answer and not last_answer.get('graded'):
+                return "Wait for the student to provide their full answer before proceeding."
             
             else:
                 return f"""You are an English tutor.
@@ -133,15 +139,13 @@ Return JSON:
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Assignments завершено. Дякую!"
+                return "Assignments завершено. Дякую за роботу!"
             
             context = WorkflowContext(state=state)
             
-            # Step 1: Choose topic
             if not state.custom_data.get('topic_chosen'):
                 state.custom_data['topic'] = user_message
                 state.custom_data['topic_chosen'] = True
-                await xano.save_workflow_state(state)
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                 result = await Runner.run(tutor, "", context=context)
@@ -160,57 +164,36 @@ Return JSON:
             
             last_answer = state.answers[-1] if state.answers else {}
             
-            # Step 2: Student provides answer
-            if last_answer and not last_answer.get('graded') and not last_answer.get('answer'):
-                # Check if student wants to continue instead of answering
-                if user_message.lower() in ['yes', 'y', 'так', 'continue', 'next']:
-                    state.custom_data['topic_chosen'] = False
-                    state.custom_data['topic'] = ''
-                    state.current_question_index += 1
-                    await xano.save_workflow_state(state)
-                    
-                    return "Great! Which topic would you like to practice next?"
-                
-                # Save student's answer
+            if last_answer and not last_answer.get('graded'):
                 last_answer['answer'] = user_message
                 last_answer['timestamp'] = datetime.now().isoformat()
-                await xano.save_workflow_state(state)
                 
-                # Evaluate
                 evaluator = self.create_evaluator_agent(context, template.get("model", "gpt-4o"))
                 eval_result = await Runner.run(evaluator, "", context=context)
                 evaluation = eval_result.final_output.model_dump()
                 
                 last_answer['evaluation'] = evaluation
                 last_answer['graded'] = True
+                
+                state.current_question_index += 1
+                
                 await xano.save_workflow_state(state)
                 
-                # Give feedback
-                tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"), evaluation)
                 result = await Runner.run(tutor, "", context=context)
                 response = result.final_output_as(str)
                 
+                state.answers.append({
+                    "assignment_index": state.current_question_index,
+                    "assignment": response,
+                    "answer": "",
+                    "timestamp": datetime.now().isoformat(),
+                    "graded": False
+                })
+                await xano.save_workflow_state(state)
+                
                 return response
             
-            # Step 3: After feedback - continue or finish
-            elif last_answer and last_answer.get('graded'):
-                if user_message.lower() in ['yes', 'y', 'так', 'continue']:
-                    state.custom_data['topic_chosen'] = False
-                    state.custom_data['topic'] = ''
-                    state.current_question_index += 1
-                    await xano.save_workflow_state(state)
-                    
-                    return "Great! Which topic would you like to practice next?"
-                elif user_message.lower() in ['no', 'n', 'ні', 'finish', 'stop']:
-                    state.status = "finished"
-                    await xano.save_workflow_state(state)
-                    from models import ChatStatus
-                    await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                    return "Thank you for practicing! Great work today. 🎉"
-                else:
-                    return "Would you like to continue with another assignment? (yes/no)"
-            
-            # Fallback: generate new assignment
             else:
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                 result = await Runner.run(tutor, "", context=context)
@@ -226,6 +209,19 @@ Return JSON:
                 await xano.save_workflow_state(state)
                 
                 return response
+    
+    def _format_feedback(self, evaluation: Dict, student_answer: str) -> str:
+        feedback_parts = []
+        
+        if evaluation.get('correct', False):
+            feedback_parts.append("✅ Excellent! All answers are correct.")
+        else:
+            feedback_parts.append("Let me check your answers:\n")
+            for error in evaluation.get('errors', []):
+                feedback_parts.append(f"❌ {error}")
+            feedback_parts.append(f"\n{evaluation.get('feedback', '')}")
+        
+        return "\n".join(feedback_parts)
     
     async def run_evaluation(
         self,
@@ -245,32 +241,52 @@ Return JSON:
             def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
                 ctx = run_context.context
 
+                assignments_text = ""
+                completed_count = 0
+                correct_count = 0
+                
+                for i, ans in enumerate(ctx.workflow_state.answers):
+                    if ans.get('answer') and ans.get('graded'):
+                        completed_count += 1
+                        assignments_text += f"\n{'='*60}\n"
+                        assignments_text += f"Assignment {ans.get('assignment_index', i) + 1}:\n"
+                        assignments_text += f"{'='*60}\n\n"
+                        assignments_text += f"**Task:** {ans.get('assignment', 'N/A')}\n\n"
+                        assignments_text += f"**Student Answer:** {ans.get('answer', 'N/A')}\n\n"
+                        
+                        evaluation = ans.get('evaluation', {})
+                        if evaluation:
+                            correct = evaluation.get('correct', False)
+                            if correct:
+                                correct_count += 1
+                                assignments_text += f"**Result:** ✅ All correct\n"
+                            else:
+                                assignments_text += f"**Result:** ❌ Has errors\n"
+                                if evaluation.get('errors'):
+                                    assignments_text += f"**Errors:**\n"
+                                    for error in evaluation.get('errors', []):
+                                        assignments_text += f"  - {error}\n"
+                            if evaluation.get('feedback'):
+                                assignments_text += f"**Feedback:** {evaluation.get('feedback')}\n"
+                        assignments_text += "\n"
+
                 criteria_text = ""
                 for i, crit in enumerate(ctx.criteria):
                     criteria_text += f"\n## Criterion {i+1}"
                     if crit.get('criterion_name'):
                         criteria_text += f": {crit['criterion_name']}"
-                    criteria_text += f"\nMax Points: {crit.get('max_points', 0)}\n"
+                    criteria_text += f"\n**Max Points:** {crit.get('max_points', 0)}\n"
                     if crit.get('summary_instructions'):
-                        criteria_text += f"Summary: {crit['summary_instructions']}\n"
+                        criteria_text += f"**Summary Instructions:** {crit['summary_instructions']}\n"
                     if crit.get('grading_instructions'):
-                        criteria_text += f"Grading: {crit['grading_instructions']}\n"
-
-                assignments_text = ""
-                for i, ans in enumerate(ctx.workflow_state.answers):
-                    if ans.get('graded') and ans.get('answer'):
-                        assignments_text += f"\n### Assignment {i+1}\n"
-                        assignments_text += f"**Task:** {ans.get('assignment', 'N/A')[:200]}...\n"
-                        assignments_text += f"**Student Answer:** {ans.get('answer', 'N/A')}\n"
-                        
-                        evaluation = ans.get('evaluation', {})
-                        if evaluation:
-                            assignments_text += f"**Correct:** {evaluation.get('correct', False)}\n"
-                            if evaluation.get('errors'):
-                                assignments_text += f"**Errors:** {', '.join(evaluation.get('errors', []))}\n"
-                        assignments_text += "\n"
+                        criteria_text += f"**Grading Instructions:** {crit['grading_instructions']}\n"
                 
                 return f"""{ctx.eval_instructions}
+
+# Summary Statistics
+- Total assignments completed: {completed_count}
+- Assignments with all correct answers: {correct_count}
+- Accuracy rate: {(correct_count/completed_count*100) if completed_count > 0 else 0:.1f}%
 
 # Completed Assignments
 {assignments_text}
@@ -278,7 +294,16 @@ Return JSON:
 # Evaluation Criteria
 {criteria_text}
 
-Evaluate the student's English performance."""
+# Your Task
+Based on the assignments above and the evaluation criteria, provide a comprehensive evaluation of the student's English performance.
+
+Focus on:
+1. Grammar accuracy
+2. Vocabulary usage
+3. Understanding of the learning goal
+4. Overall progress and patterns in errors
+
+Provide specific examples from the assignments to support your evaluation."""
             
             agent = Agent[EvaluationContext](
                 name="AnalogousFullEvaluator",

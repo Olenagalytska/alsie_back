@@ -247,13 +247,15 @@ Return JSON:
                 correct_count = 0
                 
                 for i, ans in enumerate(ctx.workflow_state.answers):
-                    if ans.get('answer') and ans.get('graded'):
+                    answer_text = ans.get('answer', '')
+                    
+                    if answer_text:
                         completed_count += 1
                         assignments_text += f"\n{'='*60}\n"
                         assignments_text += f"Assignment {ans.get('assignment_index', i) + 1}:\n"
                         assignments_text += f"{'='*60}\n\n"
                         assignments_text += f"**Task:** {ans.get('assignment', 'N/A')}\n\n"
-                        assignments_text += f"**Student Answer:** {ans.get('answer', 'N/A')}\n\n"
+                        assignments_text += f"**Student Answer:** {answer_text}\n\n"
                         
                         evaluation = ans.get('evaluation', {})
                         if evaluation:
@@ -269,7 +271,13 @@ Return JSON:
                                         assignments_text += f"  - {error}\n"
                             if evaluation.get('feedback'):
                                 assignments_text += f"**Feedback:** {evaluation.get('feedback')}\n"
+                        else:
+                            assignments_text += f"**Result:** ⚠️ Not yet evaluated\n"
+                        
                         assignments_text += "\n"
+                
+                if completed_count == 0:
+                    return "No completed assignments found. The student hasn't provided any answers yet."
 
                 criteria_text = ""
                 for i, crit in enumerate(ctx.criteria):
@@ -284,27 +292,27 @@ Return JSON:
                 
                 return f"""{ctx.eval_instructions}
 
-    # Summary Statistics
-    - Total assignments completed: {completed_count}
-    - Assignments with all correct answers: {correct_count}
-    - Accuracy rate: {(correct_count/completed_count*100) if completed_count > 0 else 0:.1f}%
+# Summary Statistics
+- Total assignments completed: {completed_count}
+- Assignments with all correct answers: {correct_count}
+- Accuracy rate: {(correct_count/completed_count*100) if completed_count > 0 else 0:.1f}%
 
-    # Completed Assignments
-    {assignments_text}
+# Completed Assignments
+{assignments_text}
 
-    # Evaluation Criteria
-    {criteria_text}
+# Evaluation Criteria
+{criteria_text}
 
-    # Your Task
-    Based on the assignments above and the evaluation criteria, provide a comprehensive evaluation of the student's English performance.
+# Your Task
+Based on the assignments above and the evaluation criteria, provide a comprehensive evaluation of the student's English performance.
 
-    Focus on:
-    1. Grammar accuracy
-    2. Vocabulary usage
-    3. Understanding of the learning goal
-    4. Overall progress and patterns in errors
+Focus on:
+1. Grammar accuracy
+2. Vocabulary usage
+3. Understanding of the learning goal
+4. Overall progress and patterns in errors
 
-    Provide specific examples from the assignments to support your evaluation."""
+Provide specific examples from the assignments to support your evaluation."""
             
             agent = Agent[EvaluationContext](
                 name="FillGapsFullEvaluator",

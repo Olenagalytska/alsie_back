@@ -100,18 +100,18 @@ def test_evaluation(ub_id: int):
             print(f"🕐 Час: {timestamp}")
             print(f"💬 Відповідей проаналізовано: {conversation_length}")
             print(f"📊 Критеріїв оцінювання: {criteria_count}")
-            print(f"💾 Збережено в Xano (grade_ub): {'✅ Так' if grade_saved else '❌ Ні'}")
+            print(f"💾 Збережено в Xano (update_ub): {'✅ Так' if grade_saved else '❌ Ні'}")
             print(f"🔄 З кешу: {'Так' if cached else 'Ні'}\n")
             print("📋 Оцінка:\n")
             print(evaluation_text)
             print(f"\n{'='*70}\n")
             
             if grade_saved:
-                print("✅ Оцінка успішно збережена в таблицю UB через grade_ub endpoint")
+                print("✅ Оцінка успішно збережена в таблицю UB через update_ub endpoint")
             else:
-                print("⚠️  Оцінка НЕ збережена через grade_ub. Перевірте:")
+                print("⚠️  Оцінка НЕ збережена. Перевірте:")
                 print("   1. Чи правильний XANO_BASE_URL в .env")
-                print("   2. Чи існує endpoint /grade_ub на Xano")
+                print("   2. Чи існує endpoint /update_ub на Xano")
                 print("   3. Логи сервера для деталей помилки")
             
             return True
@@ -154,10 +154,9 @@ def verify_xano_grade(ub_id: int):
     print(f"   2. Знайдіть запис з id = {ub_id}")
     print(f"   3. Перевірте поля:")
     print(f"      - grade (текст оцінки)")
+    print(f"      - status (має бути 'finished')")
     print(f"      - grading_output (JSON з результатами)")
     print(f"      - summary_timestamp (час оцінювання)")
-    print(f"      - work_summary (підсумок роботи)")
-    print(f"      - fail_pass (результат pass/fail)")
     print(f"\n   URL: https://your-workspace.xano.io/admin/table/ub/{ub_id}")
 
 
@@ -187,7 +186,7 @@ def main():
         print("\n✅ Тест успішно завершено!")
         print("\n💡 Наступні кроки:")
         print(f"   - Перевірте Xano таблицю UB для запису {ub_id}")
-        print(f"   - Подивіться логи grade_ub_multipass function в Xano")
+        print(f"   - Подивіться логи update_ub endpoint в Xano")
         print(f"   - Запустіть ще раз для перевірки кешування:")
         print(f"     python test_evaluation.py {ub_id}")
     else:

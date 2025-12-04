@@ -1,5 +1,6 @@
 import httpx
 import json
+import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -77,48 +78,57 @@ class XanoClient:
         response = await self.client.post(f"{self.base_url}/add_air", json=message_record)
         return response.json() if response.status_code in [200, 201] else {"id": timestamp}
     
+    def _extract_score(self, evaluation_text: str) -> Optional[float]:
+        patterns = [
+            r'\*\*Total Score:\*\*\s*(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)',
+            r'Total Score:\s*(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)',
+            r'Загальна оцінка:\s*(\d+(?:\.\d+)?)/(\d+(?:\.\d+)?)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, evaluation_text)
+            if match:
+                try:
+                    score = float(match.group(1))
+                    max_score = float(match.group(2))
+                    if max_score > 0:
+                        return round(score, 2)
+                except (ValueError, ZeroDivisionError):
+                    continue
+        
+        return None
+    
     async def update_chat_status(self, ub_id: int, status: Optional[ChatStatus] = None, grade: Optional[str] = None, last_air_id: Optional[int] = None):
         update_data = {"ub_id": int(ub_id)}
         
         if status:
             update_data["status"] = status.value
+        
         if grade is not None:
-            update_data["grade"] = grade
+            update_data["work_summary"] = grade
+            
+            score = self._extract_score(grade)
+            if score is not None:
+                update_data["grade"] = score
+                print(f"Extracted score: {score}")
+            else:
+                print("Could not extract numerical score from evaluation")
+        
         if last_air_id:
             update_data["last_air_id"] = int(last_air_id)
         
         try:
+            print(f"Updating UB {ub_id} with data: {update_data}")
             response = await self.client.post(f"{self.base_url}/update_ub", json=update_data)
             if response.status_code in [200, 201]:
-                return response.json()
-        except Exception as e:
-            print(f"Status update error: {e}")
-        return None
-    
-    async def grade_ub(self, ub_id: int) -> Optional[Dict[str, Any]]:
-        try:
-            print(f"Calling Xano grade_ub for UB ID: {ub_id}")
-            
-            response = await self.client.post(
-                f"{self.base_url}/grade_ub",
-                json={"ub_id": ub_id},
-                timeout=60.0
-            )
-            
-            if response.status_code in [200, 201]:
                 result = response.json()
-                print(f"Grade UB successful: {result}")
+                print(f"Update UB successful: {result}")
                 return result
             else:
-                print(f"Grade UB error: {response.status_code}")
+                print(f"Update UB error: {response.status_code}")
                 print(f"Response: {response.text[:500]}")
-                return None
-                
-        except httpx.TimeoutException:
-            print(f"Grade UB timeout for UB ID: {ub_id}")
-            return None
         except Exception as e:
-            print(f"Grade UB exception: {type(e).__name__}: {str(e)}")
+            print(f"Status update error: {e}")
             import traceback
             traceback.print_exc()
-            return None
+        return None

@@ -125,14 +125,24 @@ async def evaluate_chat(ub_id: int):
             model=block.get("model", "gpt-4o")
         )
         
+        print(f"Saving evaluation to Xano via grade_ub endpoint...")
+        
         await xano.update_chat_status(ub_id, grade=evaluation_text)
+        
+        grade_result = await xano.grade_ub(ub_id)
+        
+        if grade_result:
+            print(f"Grade saved successfully: {grade_result}")
+        else:
+            print(f"Grade save returned empty result")
         
         return {
             "evaluation": evaluation_text,
             "timestamp": datetime.now().isoformat(),
             "conversation_length": len(workflow_state.answers),
             "criteria_count": len(criteria),
-            "cached": False
+            "cached": False,
+            "grade_saved": bool(grade_result)
         }
         
     except HTTPException:

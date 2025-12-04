@@ -94,3 +94,31 @@ class XanoClient:
         except Exception as e:
             print(f"Status update error: {e}")
         return None
+    
+    async def grade_ub(self, ub_id: int) -> Optional[Dict[str, Any]]:
+        try:
+            print(f"Calling Xano grade_ub for UB ID: {ub_id}")
+            
+            response = await self.client.post(
+                f"{self.base_url}/grade_ub",
+                json={"ub_id": ub_id},
+                timeout=60.0
+            )
+            
+            if response.status_code in [200, 201]:
+                result = response.json()
+                print(f"Grade UB successful: {result}")
+                return result
+            else:
+                print(f"Grade UB error: {response.status_code}")
+                print(f"Response: {response.text[:500]}")
+                return None
+                
+        except httpx.TimeoutException:
+            print(f"Grade UB timeout for UB ID: {ub_id}")
+            return None
+        except Exception as e:
+            print(f"Grade UB exception: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None

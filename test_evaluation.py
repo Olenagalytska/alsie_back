@@ -94,13 +94,25 @@ def test_evaluation(ub_id: int):
             timestamp = data.get('timestamp', '')
             conversation_length = data.get('conversation_length', 0)
             criteria_count = data.get('criteria_count', 0)
+            cached = data.get('cached', False)
+            grade_saved = data.get('grade_saved', False)
             
             print(f"🕐 Час: {timestamp}")
             print(f"💬 Відповідей проаналізовано: {conversation_length}")
-            print(f"📊 Критеріїв оцінювання: {criteria_count}\n")
+            print(f"📊 Критеріїв оцінювання: {criteria_count}")
+            print(f"💾 Збережено в Xano (grade_ub): {'✅ Так' if grade_saved else '❌ Ні'}")
+            print(f"🔄 З кешу: {'Так' if cached else 'Ні'}\n")
             print("📋 Оцінка:\n")
             print(evaluation_text)
             print(f"\n{'='*70}\n")
+            
+            if grade_saved:
+                print("✅ Оцінка успішно збережена в таблицю UB через grade_ub endpoint")
+            else:
+                print("⚠️  Оцінка НЕ збережена через grade_ub. Перевірте:")
+                print("   1. Чи правильний XANO_BASE_URL в .env")
+                print("   2. Чи існує endpoint /grade_ub на Xano")
+                print("   3. Логи сервера для деталей помилки")
             
             return True
             
@@ -132,8 +144,25 @@ def test_evaluation(ub_id: int):
         return False
 
 
+def verify_xano_grade(ub_id: int):
+    print(f"\n{'='*70}")
+    print(" ПЕРЕВІРКА ЗБЕРЕЖЕННЯ В XANO")
+    print(f"{'='*70}\n")
+    
+    print(f"💡 Перевірте в Xano Dashboard:")
+    print(f"   1. Відкрийте таблицю 'UB'")
+    print(f"   2. Знайдіть запис з id = {ub_id}")
+    print(f"   3. Перевірте поля:")
+    print(f"      - grade (текст оцінки)")
+    print(f"      - grading_output (JSON з результатами)")
+    print(f"      - summary_timestamp (час оцінювання)")
+    print(f"      - work_summary (підсумок роботи)")
+    print(f"      - fail_pass (результат pass/fail)")
+    print(f"\n   URL: https://your-workspace.xano.io/admin/table/ub/{ub_id}")
+
+
 def main():
-    print("\n🎓 EdTech AI Platform - Тестування Evaluation\n")
+    print("\n🎓 EdTech AI Platform - Тестування Evaluation з Xano Integration\n")
     
     if len(sys.argv) < 2:
         print("❌ Використання: python test_evaluation.py <UB_ID>")
@@ -154,7 +183,13 @@ def main():
     success = test_evaluation(ub_id)
     
     if success:
-        print("✅ Тест успішно завершено!")
+        verify_xano_grade(ub_id)
+        print("\n✅ Тест успішно завершено!")
+        print("\n💡 Наступні кроки:")
+        print(f"   - Перевірте Xano таблицю UB для запису {ub_id}")
+        print(f"   - Подивіться логи grade_ub_multipass function в Xano")
+        print(f"   - Запустіть ще раз для перевірки кешування:")
+        print(f"     python test_evaluation.py {ub_id}")
     else:
         print("\n❌ Тест завершився з помилками")
         sys.exit(1)

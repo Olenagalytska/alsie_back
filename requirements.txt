@@ -1,9 +1,9 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
-pydantic==2.10.3
+pydantic>=2.12.3
 httpx==0.28.1
-openai==1.57.2
-openai-agents-python==0.1.0
+openai>=2.8.0
+openai-agents@ git+https://github.com/openai/openai-agents-python.git@main
 python-dotenv==1.0.1
 gunicorn==23.0.0
 pytest==8.3.4

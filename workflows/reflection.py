@@ -308,6 +308,8 @@ Fill the template with collected data. Be concise and structured."""
                 criteria=criteria
             )
             
+            total_max_points = self._calculate_total_points(criteria)
+            
             def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
                 ctx = run_context.context
 
@@ -351,7 +353,34 @@ Fill the template with collected data. Be concise and structured."""
 # Evaluation Criteria
 {criteria_text}
 
-Evaluate the reflection session based on ASF framework completeness and quality."""
+# Your Task
+
+Evaluate the reflection session based on ASF framework completeness and quality.
+
+For each criterion:
+1. Review the session conversation and collected data
+2. Assess how well the criterion was met
+3. Assign a grade (0 to max_points for that criterion)
+4. Provide clear reasoning
+
+Format your response as:
+
+# Evaluation Report
+
+## Criterion 1: [Name]
+**Assessment:** [Detailed assessment]
+**Grade:** X/Y points
+**Reasoning:** [Why this grade was assigned]
+
+## Criterion 2: [Name]
+**Assessment:** [Detailed assessment]
+**Grade:** X/Y points
+**Reasoning:** [Explanation]
+
+# Summary
+**Total Score:** X/{total_max_points} points
+**Overall Performance:** [Brief summary]
+**Recommendations:** [Optional suggestions]"""
             
             agent = Agent[EvaluationContext](
                 name="ReflectionEvaluator",
@@ -361,5 +390,9 @@ Evaluate the reflection session based on ASF framework completeness and quality.
             )
             
             result = await Runner.run(agent, "", context=context)
+            evaluation_text = result.final_output_as(str)
             
-            return result.final_output_as(str)
+            if isinstance(evaluation_text, str):
+                evaluation_text = evaluation_text.strip()
+            
+            return evaluation_text

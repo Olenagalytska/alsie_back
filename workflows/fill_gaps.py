@@ -239,6 +239,8 @@ Return JSON:
                 criteria=criteria
             )
             
+            total_max_points = self._calculate_total_points(criteria)
+            
             def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
                 ctx = run_context.context
 
@@ -312,7 +314,30 @@ Focus on:
 3. Understanding of the learning goal
 4. Overall progress and patterns in errors
 
-Provide specific examples from the assignments to support your evaluation."""
+For each criterion:
+1. Review the assignments
+2. Assess how well the student met the criterion
+3. Assign a grade (0 to max_points for that criterion)
+4. Provide clear reasoning with specific examples
+
+Format your response as:
+
+# Evaluation Report
+
+## Criterion 1: [Name]
+**Assessment:** [Detailed assessment with examples]
+**Grade:** X/Y points
+**Reasoning:** [Why this grade was assigned]
+
+## Criterion 2: [Name]
+**Assessment:** [Detailed assessment]
+**Grade:** X/Y points
+**Reasoning:** [Explanation]
+
+# Summary
+**Total Score:** X/{total_max_points} points
+**Overall Performance:** [Brief summary]
+**Recommendations:** [Optional suggestions]"""
             
             agent = Agent[EvaluationContext](
                 name="FillGapsFullEvaluator",
@@ -322,5 +347,9 @@ Provide specific examples from the assignments to support your evaluation."""
             )
             
             result = await Runner.run(agent, "", context=context)
+            evaluation_text = result.final_output_as(str)
             
-            return result.final_output_as(str)
+            if isinstance(evaluation_text, str):
+                evaluation_text = evaluation_text.strip()
+            
+            return evaluation_text

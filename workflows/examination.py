@@ -213,6 +213,8 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 criteria=criteria
             )
             
+            total_max_points = self._calculate_total_points(criteria)
+            
             def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
                 ctx = run_context.context
 
@@ -288,7 +290,7 @@ Format your response as:
 **Reasoning:** [Explanation]
 
 # Summary
-**Total Score:** X/Y points
+**Total Score:** X/{total_max_points} points
 **Overall Performance:** [Brief summary]
 **Recommendations:** [Optional suggestions for improvement]"""
             
@@ -300,5 +302,9 @@ Format your response as:
             )
             
             result = await Runner.run(agent, "", context=context)
+            evaluation_text = result.final_output_as(str)
             
-            return result.final_output_as(str)
+            if isinstance(evaluation_text, str):
+                evaluation_text = evaluation_text.strip()
+            
+            return evaluation_text

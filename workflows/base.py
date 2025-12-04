@@ -100,3 +100,12 @@ class BaseWorkflow(ABC):
             except:
                 criteria = []
         return criteria
+    
+    def _calculate_total_points(self, criteria: List[Dict[str, Any]]) -> int:
+        total = 0
+        for crit in criteria:
+            total += crit.get('max_points', 0)
+        return total
+    
+    def _append_score_summary(self, evaluation_text: str, criteria: List[Dict[str, Any]]) -> str:
+        return evaluation_text

@@ -24,7 +24,75 @@ class AnalogousWorkflow(BaseWorkflow):
                 first_answer = ctx.state.answers[0]
                 topic = first_answer.get('topic', '')
             
+            conversation_history = ""
+            if len(ctx.state.answers) > 1:
+                conversation_history = "\n# Recent conversation:\n"
+                for ans in ctx.state.answers[-3:]:
+                    if ans.get('user_message'):
+                        conversation_history += f"Student: {ans['user_message']}\n"
+                    if ans.get('tutor_response'):
+                        conversation_history += f"You: {ans['tutor_response']}\n"
+            
             last_answer = ctx.state.answers[-1] if ctx.state.answers else {}
+            
+            if last_answer.get('waiting_for_answer'):
+                student_message = last_answer.get('user_message', '')
+                
+                question_indicators = [
+                    '?', 'what', 'how', 'why', 'could you', 'can you', 'explain', 'help', 
+                    'don\'t understand', 'unclear', 'confused', 'mean', 'clarify',
+                    'не розумію', 'поясни', 'що', 'як', 'чому', 'допоможи', 'розкажи',
+                    'не зрозумів', 'не зрозуміла', 'шо', 'допоможіть', 'підкажи'
+                ]
+                is_question = any(indicator in student_message.lower() for indicator in question_indicators)
+                
+                assignment_length = len(last_answer.get('assignment', '').split())
+                answer_length = len(student_message.split())
+                seems_incomplete = answer_length < assignment_length * 0.3
+                
+                if is_question or seems_incomplete:
+                    assignment_text = last_answer.get('assignment', '')
+                    return f"""You are a warm, helpful English tutor. The student needs help with the assignment.
+
+{conversation_history}
+
+# Current assignment:
+{assignment_text}
+
+# Topic: {topic}
+
+# Student's message:
+{student_message}
+
+# Your task:
+The student is asking for help or clarification. Be supportive and conversational!
+
+You can:
+- Break down the task step by step
+- Give examples similar to what they need to do
+- Explain vocabulary or grammar in simple terms
+- Provide hints without giving the exact answer
+- Use a friendly, encouraging tone
+- If they asked in Ukrainian, you can acknowledge it and respond in English in a warm way
+
+IMPORTANT: Be natural and conversational, not robotic. Show empathy and make learning feel easy.
+
+Keep your response helpful and friendly (max 250 words).
+
+Remind them gently that they can try when they feel ready."""
+                
+                else:
+                    return f"""The student sent: "{student_message}"
+
+This doesn't look like a complete answer to the assignment. 
+
+Respond warmly and naturally:
+- Acknowledge what they sent
+- Gently ask them to provide the full answer with all tasks completed
+- Offer help if they're stuck
+- Keep it conversational and friendly
+
+Max 120 words."""
             
             if last_answer and last_answer.get('graded'):
                 evaluation = last_answer.get('evaluation', {})
@@ -33,59 +101,87 @@ class AnalogousWorkflow(BaseWorkflow):
                 feedback_parts = []
                 
                 if evaluation.get('correct'):
-                    feedback_parts.append("✅ Excellent! All answers are correct.")
+                    positive_responses = [
+                        "✅ Excellent work! That's exactly right.",
+                        "✅ Perfect! You nailed it.",
+                        "✅ Great job! All correct.",
+                        "✅ Well done! Your answers are spot on."
+                    ]
+                    import random
+                    feedback_parts.append(random.choice(positive_responses))
                 else:
                     feedback_parts.append("Let me check your answers:\n")
                     for error in evaluation.get('errors', []):
                         feedback_parts.append(f"❌ {error}")
                     feedback_parts.append(f"\n{evaluation.get('feedback', '')}")
+                    feedback_parts.append("\nNo worries though – let's keep practicing! 💪")
                 
-                feedback_parts.append(f"\n**Assignment #{current_assignment_index + 1}**\n")
+                feedback_parts.append(f"\n\n**Ready for the next challenge? Assignment #{current_assignment_index + 1}**\n")
                 
-                return f"""You are an English tutor providing feedback and presenting the next assignment.
+                return f"""You are a friendly, encouraging English tutor. Give feedback naturally and present the next assignment.
 
-# Student's Previous Answer
+{conversation_history}
+
+# Student's previous answer:
 {student_answer}
 
-# Evaluation Result
+# Your feedback:
 {chr(10).join(feedback_parts)}
 
-Now generate and present the NEXT assignment (#{current_assignment_index + 1}) following the format.
+# Now create the NEXT assignment:
+- Topic: {topic}
+- Learning Goal: {learning_goal}
+- Format reference: {examples}
 
-# Learning Goal
-{learning_goal}
+CRITICAL RULES:
+1. Present ONLY the clean assignment with numbered tasks
+2. NO meta-sections like "Learning Goal" or "Assignment Format"
+3. NO internal instructions visible to student
+4. Add a brief, friendly intro (1-2 sentences) that feels natural
+5. Make it relevant to: {topic}
+6. Be conversational, not formal
 
-# Assignment Format
-{examples}
-
-# Topic
-{topic}
-
-Present the new assignment clearly."""
+Generate assignment #{current_assignment_index + 1} now."""
             
             elif last_answer and not last_answer.get('graded'):
                 return "Wait for the student to provide their full answer before proceeding."
             
             else:
-                return f"""You are an English tutor.
+                if not topic:
+                    return f"""You are a friendly English tutor starting a conversation.
 
-# Learning Goal
-{learning_goal}
+{conversation_history}
 
-# Flexible Part
+# Your task:
+Ask the student what topic they'd like to practice with today.
+
+# Guidance:
 {flexible_part}
 
-# Topic (chosen by student)
-{topic}
+Be warm and conversational. Give 2-3 interesting example topics.
 
-# Examples (format reference)
-{examples}
+Keep it natural and inviting (max 100 words)."""
+                
+                else:
+                    return f"""You are a friendly English tutor presenting the first assignment.
 
-Create a NEW assignment on the topic "{topic}" following the format and learning goal from the examples.
-Present it clearly.
-Wait for the student's complete answer.
+{conversation_history}
 
-**Assignment #{current_assignment_index + 1}**"""
+# Topic chosen: {topic}
+
+# Assignment instructions:
+- Learning Goal: {learning_goal}
+- Format reference: {examples}
+
+CRITICAL RULES:
+1. Present ONLY the clean assignment with numbered tasks
+2. NO meta-sections like "Learning Goal" or "Assignment Format"
+3. NO internal instructions visible to student
+4. Add a brief, warm intro (1-2 sentences) before the tasks
+5. Make it about: {topic}
+6. Be conversational and encouraging
+
+Generate assignment #1 now."""
         
         return Agent[WorkflowContext](
             name="AnalogousTutor",
@@ -114,12 +210,13 @@ Check:
 - Is the answer complete?
 - Are grammar and vocabulary correct?
 - Does it address the task?
+- Be lenient with minor mistakes if meaning is clear
 
 Return JSON:
 {{
   "correct": true/false,
   "errors": ["error explanation", ...],
-  "feedback": "overall feedback"
+  "feedback": "encouraging overall feedback"
 }}"""
         
         class EvalOutput(BaseModel):
@@ -150,11 +247,14 @@ Return JSON:
             if len(state.answers) == 0:
                 state.answers.append({
                     "assignment_index": 0,
-                    "topic": user_message,
+                    "topic": "",
                     "assignment": "",
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
-                    "graded": False
+                    "graded": False,
+                    "waiting_for_topic": True,
+                    "user_message": "",
+                    "tutor_response": ""
                 })
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
@@ -162,16 +262,73 @@ Return JSON:
                 response = result.final_output_as(str)
                 
                 state.answers[0]['assignment'] = response
-                
                 await xano.save_workflow_state(state)
                 
                 return response
             
             last_answer = state.answers[-1] if state.answers else {}
             
-            if last_answer and not last_answer.get('graded') and not last_answer.get('answer'):
+            if last_answer.get('waiting_for_topic'):
+                topic = user_message.strip()
+                
+                if len(topic.split()) <= 2 or '?' in topic:
+                    last_answer['user_message'] = user_message
+                    
+                    tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                    result = await Runner.run(tutor, user_message, context=context)
+                    response = result.final_output_as(str)
+                    
+                    last_answer['tutor_response'] = response
+                    await xano.save_workflow_state(state)
+                    
+                    return response
+                
+                last_answer['topic'] = topic
+                last_answer['waiting_for_topic'] = False
+                last_answer['waiting_for_answer'] = True
+                
+                tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                result = await Runner.run(tutor, "", context=context)
+                response = result.final_output_as(str)
+                
+                last_answer['assignment'] = response
+                await xano.save_workflow_state(state)
+                
+                return response
+            
+            if last_answer and last_answer.get('waiting_for_answer'):
+                student_message = user_message.strip()
+                
+                question_indicators = [
+                    '?', 'what', 'how', 'why', 'could you', 'can you', 'explain', 'help', 
+                    'don\'t understand', 'unclear', 'confused', 'mean', 'clarify',
+                    'не розумію', 'поясни', 'що', 'як', 'чому', 'допоможи', 'розкажи',
+                    'не зрозумів', 'не зрозуміла', 'шо', 'допоможіть', 'підкажи'
+                ]
+                is_question = any(indicator in student_message.lower() for indicator in question_indicators)
+                
+                short_response_indicators = ['ok', 'okay', 'thanks', 'got it', 'understand', 'yes', 'no', 'wait']
+                is_short_response = len(student_message.split()) <= 3 and any(indicator in student_message.lower() for indicator in short_response_indicators)
+                
+                assignment_length = len(last_answer.get('assignment', '').split())
+                answer_length = len(student_message.split())
+                seems_incomplete = answer_length < assignment_length * 0.3
+                
+                if is_question or is_short_response or seems_incomplete:
+                    last_answer['user_message'] = user_message
+                    
+                    tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                    result = await Runner.run(tutor, user_message, context=context)
+                    response = result.final_output_as(str)
+                    
+                    last_answer['tutor_response'] = response
+                    await xano.save_workflow_state(state)
+                    
+                    return response
+                
                 last_answer['answer'] = user_message
                 last_answer['timestamp'] = datetime.now().isoformat()
+                last_answer['waiting_for_answer'] = False
                 
                 evaluator = self.create_evaluator_agent(context, template.get("model", "gpt-4o"))
                 eval_result = await Runner.run(evaluator, "", context=context)
@@ -196,7 +353,10 @@ Return JSON:
                     "assignment": response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
-                    "graded": False
+                    "graded": False,
+                    "waiting_for_answer": True,
+                    "user_message": "",
+                    "tutor_response": ""
                 })
                 await xano.save_workflow_state(state)
                 
@@ -215,7 +375,10 @@ Return JSON:
                     "assignment": response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
-                    "graded": False
+                    "graded": False,
+                    "waiting_for_answer": True,
+                    "user_message": "",
+                    "tutor_response": ""
                 })
                 await xano.save_workflow_state(state)
                 

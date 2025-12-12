@@ -1,7 +1,8 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, AsyncGenerator
 from datetime import datetime
 
 from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
+from openai.types.responses import ResponseTextDeltaEvent
 
 from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContext
 
@@ -40,13 +41,14 @@ Remember:
             model_settings=ModelSettings(temperature=0.7, max_tokens=1024)
         )
     
-    async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
+    async def run_workflow_stream(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> AsyncGenerator[str, None]:
         with trace(f"Custom-{ub_id}"):
             specifications = self.parse_specifications(block)
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Чат завершено."
+                yield "Чат завершено."
+                return
             
             context = WorkflowContext(state=state)
             
@@ -64,17 +66,21 @@ Remember:
             full_instructions = instructions + specs_text
             
             assistant = self.create_assistant_agent(context, full_instructions, template.get("model", "gpt-4o"))
-            result = await Runner.run(assistant, user_message, context=context)
-            response = result.final_output_as(str)
+            result = Runner.run_streamed(assistant, user_message, context=context)
+            
+            full_response = ""
+            async for event in result.stream_events():
+                if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                    chunk = event.data.delta
+                    full_response += chunk
+                    yield chunk
             
             state.answers.append({
                 "user_message": user_message,
-                "assistant_response": response,
+                "assistant_response": full_response,
                 "timestamp": datetime.now().isoformat()
             })
             await xano.save_workflow_state(state)
-            
-            return response
     
     async def run_evaluation(
         self,

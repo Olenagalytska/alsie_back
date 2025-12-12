@@ -1,8 +1,9 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, AsyncGenerator
 from datetime import datetime
 from pydantic import BaseModel
 
 from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
+from openai.types.responses import ResponseTextDeltaEvent
 
 from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContext
 
@@ -232,7 +233,7 @@ Return JSON:
             model_settings=ModelSettings(temperature=0.2, max_tokens=512)
         )
     
-    async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
+    async def run_workflow_stream(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> AsyncGenerator[str, None]:
         with trace(f"Analogous-{ub_id}"):
             specifications = self.parse_specifications(block)
             specs = specifications[0] if specifications else {}
@@ -240,7 +241,8 @@ Return JSON:
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Assignments завершено. Дякую за роботу!"
+                yield "Assignments завершено. Дякую за роботу!"
+                return
             
             context = WorkflowContext(state=state)
             
@@ -258,13 +260,18 @@ Return JSON:
                 })
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                result = await Runner.run(tutor, "", context=context)
-                response = result.final_output_as(str)
+                result = Runner.run_streamed(tutor, "", context=context)
                 
-                state.answers[0]['assignment'] = response
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
+                
+                state.answers[0]['assignment'] = full_response
                 await xano.save_workflow_state(state)
-                
-                return response
+                return
             
             last_answer = state.answers[-1] if state.answers else {}
             
@@ -275,26 +282,36 @@ Return JSON:
                     last_answer['user_message'] = user_message
                     
                     tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                    result = await Runner.run(tutor, user_message, context=context)
-                    response = result.final_output_as(str)
+                    result = Runner.run_streamed(tutor, user_message, context=context)
                     
-                    last_answer['tutor_response'] = response
+                    full_response = ""
+                    async for event in result.stream_events():
+                        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                            chunk = event.data.delta
+                            full_response += chunk
+                            yield chunk
+                    
+                    last_answer['tutor_response'] = full_response
                     await xano.save_workflow_state(state)
-                    
-                    return response
+                    return
                 
                 last_answer['topic'] = topic
                 last_answer['waiting_for_topic'] = False
                 last_answer['waiting_for_answer'] = True
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                result = await Runner.run(tutor, "", context=context)
-                response = result.final_output_as(str)
+                result = Runner.run_streamed(tutor, "", context=context)
                 
-                last_answer['assignment'] = response
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
+                
+                last_answer['assignment'] = full_response
                 await xano.save_workflow_state(state)
-                
-                return response
+                return
             
             if last_answer and last_answer.get('waiting_for_answer'):
                 student_message = user_message.strip()
@@ -318,13 +335,18 @@ Return JSON:
                     last_answer['user_message'] = user_message
                     
                     tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                    result = await Runner.run(tutor, user_message, context=context)
-                    response = result.final_output_as(str)
+                    result = Runner.run_streamed(tutor, user_message, context=context)
                     
-                    last_answer['tutor_response'] = response
+                    full_response = ""
+                    async for event in result.stream_events():
+                        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                            chunk = event.data.delta
+                            full_response += chunk
+                            yield chunk
+                    
+                    last_answer['tutor_response'] = full_response
                     await xano.save_workflow_state(state)
-                    
-                    return response
+                    return
                 
                 last_answer['answer'] = user_message
                 last_answer['timestamp'] = datetime.now().isoformat()
@@ -342,15 +364,21 @@ Return JSON:
                 await xano.save_workflow_state(state)
                 
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"), evaluation)
-                result = await Runner.run(tutor, "", context=context)
-                response = result.final_output_as(str)
+                result = Runner.run_streamed(tutor, "", context=context)
+                
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
                 
                 topic = state.answers[0].get('topic', '')
                 
                 state.answers.append({
                     "assignment_index": state.current_question_index,
                     "topic": topic,
-                    "assignment": response,
+                    "assignment": full_response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "graded": False,
@@ -359,20 +387,25 @@ Return JSON:
                     "tutor_response": ""
                 })
                 await xano.save_workflow_state(state)
-                
-                return response
+                return
             
             else:
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                result = await Runner.run(tutor, "", context=context)
-                response = result.final_output_as(str)
+                result = Runner.run_streamed(tutor, "", context=context)
+                
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
                 
                 topic = state.answers[0].get('topic', '') if state.answers else ''
                 
                 state.answers.append({
                     "assignment_index": state.current_question_index,
                     "topic": topic,
-                    "assignment": response,
+                    "assignment": full_response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "graded": False,
@@ -381,8 +414,6 @@ Return JSON:
                     "tutor_response": ""
                 })
                 await xano.save_workflow_state(state)
-                
-                return response
     
     def _format_feedback(self, evaluation: Dict, student_answer: str) -> str:
         feedback_parts = []

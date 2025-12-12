@@ -3,6 +3,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 
 from models import StudentMessage, AssistantResponse, ChatStatus
@@ -46,7 +47,7 @@ async def health():
     }
 
 
-@app.post("/chat/message", response_model=AssistantResponse)
+@app.post("/chat/message")
 async def process_student_message(message: StudentMessage):
     try:
         session = await xano.get_chat_session(message.ub_id)
@@ -61,14 +62,17 @@ async def process_student_message(message: StudentMessage):
         
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
-        ai_response = await workflow.run_workflow(block, template_data, message.content, message.ub_id, xano)
+        async def generate():
+            full_response = ""
+            async for chunk in workflow.run_workflow_stream(block, template_data, message.content, message.ub_id, xano):
+                full_response += chunk
+                yield chunk
+            
+            messages_data = await xano.get_messages(message.ub_id)
+            last_air_id = messages_data[-1]["id"] if messages_data else 0
+            await xano.save_message_pair(message.ub_id, message.content, full_response, last_air_id)
         
-        messages_data = await xano.get_messages(message.ub_id)
-        last_air_id = messages_data[-1]["id"] if messages_data else 0
-        
-        await xano.save_message_pair(message.ub_id, message.content, ai_response, last_air_id)
-        
-        return AssistantResponse(title="-", text=ai_response, type="interview")
+        return StreamingResponse(generate(), media_type="text/plain")
         
     except Exception as e:
         print(f"ERROR: {type(e).__name__}: {str(e)}")

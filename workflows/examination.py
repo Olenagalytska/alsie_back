@@ -1,8 +1,9 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, AsyncGenerator
 from datetime import datetime
 from pydantic import BaseModel
 
 from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
+from openai.types.responses import ResponseTextDeltaEvent
 
 from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContext
 
@@ -96,27 +97,35 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
             model_settings=ModelSettings(temperature=0.2, max_tokens=512)
         )
     
-    async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
+    async def run_workflow_stream(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> AsyncGenerator[str, None]:
         with trace(f"Examination-{ub_id}"):
             specifications = self.parse_specifications(block)
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Іспит вже завершено."
+                yield "Іспит вже завершено."
+                return
             
             if state.current_question_index >= len(state.questions):
                 state.status = "finished"
                 await xano.save_workflow_state(state)
                 from models import ChatStatus
                 await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                return "Вітаю! Ви відповіли на всі питання. Іспит завершено."
+                yield "Вітаю! Ви відповіли на всі питання. Іспит завершено."
+                return
             
             context = WorkflowContext(state=state)
             
             if not state.answers or state.answers[-1].get('evaluation', {}).get('complete', False):
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
-                result = await Runner.run(interviewer, "", context=context)
-                response = result.final_output_as(str)
+                result = Runner.run_streamed(interviewer, "", context=context)
+                
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
                 
                 state.answers.append({
                     "question_index": state.current_question_index,
@@ -126,7 +135,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 })
                 state.follow_up_count = 0
                 await xano.save_workflow_state(state)
-                return response
+                return
             
             state.answers[-1]['answer'] = user_message
             state.answers[-1]['timestamp'] = datetime.now().isoformat()
@@ -146,13 +155,20 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     await xano.save_workflow_state(state)
                     from models import ChatStatus
                     await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                    return "Вітаю! Ви відповіді на всі питання. Іспит завершено."
+                    yield "Вітаю! Ви відповіді на всі питання. Іспит завершено."
+                    return
                 
                 await xano.save_workflow_state(state)
                 
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
-                result = await Runner.run(interviewer, "", context=context)
-                response = result.final_output_as(str)
+                result = Runner.run_streamed(interviewer, "", context=context)
+                
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
                 
                 state.answers.append({
                     "question_index": state.current_question_index,
@@ -161,7 +177,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     "evaluation": {}
                 })
                 await xano.save_workflow_state(state)
-                return response
+                return
             
             else:
                 if state.follow_up_count >= state.max_follow_ups:
@@ -173,13 +189,20 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         await xano.save_workflow_state(state)
                         from models import ChatStatus
                         await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                        return "Іспит завершено."
+                        yield "Іспит завершено."
+                        return
                     
                     await xano.save_workflow_state(state)
                     
                     interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
-                    result = await Runner.run(interviewer, "", context=context)
-                    response = result.final_output_as(str)
+                    result = Runner.run_streamed(interviewer, "", context=context)
+                    
+                    full_response = ""
+                    async for event in result.stream_events():
+                        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                            chunk = event.data.delta
+                            full_response += chunk
+                            yield chunk
                     
                     state.answers.append({
                         "question_index": state.current_question_index,
@@ -188,15 +211,18 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         "evaluation": {}
                     })
                     await xano.save_workflow_state(state)
-                    return response
+                    return
                 
                 else:
                     state.follow_up_count += 1
                     await xano.save_workflow_state(state)
                     
                     interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
-                    result = await Runner.run(interviewer, "Student answer was incomplete. Ask a follow-up question to clarify.", context=context)
-                    return result.final_output_as(str)
+                    result = Runner.run_streamed(interviewer, "Student answer was incomplete. Ask a follow-up question to clarify.", context=context)
+                    
+                    async for event in result.stream_events():
+                        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                            yield event.data.delta
     
     async def run_evaluation(
         self,

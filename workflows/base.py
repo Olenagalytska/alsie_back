@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, AsyncGenerator
 from pydantic import BaseModel
 from datetime import datetime
 import json
@@ -39,14 +39,14 @@ class BaseWorkflow(ABC):
         self.openai_api_key = openai_api_key
     
     @abstractmethod
-    async def run_workflow(
+    async def run_workflow_stream(
         self,
         block: Dict,
         template: Dict,
         user_message: str,
         ub_id: int,
         xano
-    ) -> str:
+    ) -> AsyncGenerator[str, None]:
         pass
     
     @abstractmethod

@@ -1,9 +1,10 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, AsyncGenerator
 from datetime import datetime
 from pydantic import BaseModel
 import json
 
 from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
+from openai.types.responses import ResponseTextDeltaEvent
 
 from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContext
 
@@ -198,7 +199,7 @@ Fill the template with collected data. Be concise and structured."""
             model_settings=ModelSettings(temperature=0.7, max_tokens=512)
         )
     
-    async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
+    async def run_workflow_stream(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> AsyncGenerator[str, None]:
         with trace(f"Reflection-{ub_id}"):
             specifications = self.parse_specifications(block)
             specs = specifications[0] if specifications else {}
@@ -206,7 +207,8 @@ Fill the template with collected data. Be concise and structured."""
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Reflection session завершено. Дякую!"
+                yield "Reflection session завершено. Дякую!"
+                return
             
             context = WorkflowContext(state=state)
             
@@ -217,25 +219,29 @@ Fill the template with collected data. Be concise and structured."""
                 state.custom_data['feed_forward'] = {}
             
             coach = self.create_coach_agent(context, specs, template.get("model", "gpt-4o"))
-            result = await Runner.run(coach, user_message, context=context)
-            response = result.final_output_as(str)
+            result = Runner.run_streamed(coach, user_message, context=context)
+            
+            full_response = ""
+            async for event in result.stream_events():
+                if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                    chunk = event.data.delta
+                    full_response += chunk
+                    yield chunk
             
             state.answers.append({
                 "user_message": user_message,
-                "coach_response": response,
+                "coach_response": full_response,
                 "timestamp": datetime.now().isoformat(),
                 "phase": state.custom_data.get('phase', 'aspiration')
             })
             
-            self._update_phase_and_data(state, user_message, response, specs)
+            self._update_phase_and_data(state, user_message, full_response, specs)
             
             await xano.save_workflow_state(state)
             
             if state.status == "finished":
                 from models import ChatStatus
                 await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-            
-            return response
     
     def _update_phase_and_data(self, state: WorkflowState, user_message: str, coach_response: str, specs: Dict):
         phase = state.custom_data.get('phase', 'aspiration')

@@ -1,8 +1,9 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, AsyncGenerator
 from datetime import datetime
 import re
 
 from agents import Agent, Runner, ModelSettings, RunContextWrapper, trace
+from openai.types.responses import ResponseTextDeltaEvent
 
 from .base import BaseWorkflow, WorkflowContext, WorkflowState, EvaluationContext
 
@@ -75,7 +76,7 @@ CRITICAL: If you notice you're asking similar questions repeatedly, STOP and mov
             model_settings=ModelSettings(temperature=0.8, max_tokens=1024)
         )
     
-    async def run_workflow(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> str:
+    async def run_workflow_stream(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> AsyncGenerator[str, None]:
         with trace(f"Roleplay-{ub_id}"):
             specifications = self.parse_specifications(block)
             specs = specifications[0] if specifications else {}
@@ -83,7 +84,8 @@ CRITICAL: If you notice you're asking similar questions repeatedly, STOP and mov
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":
-                return "Role-play завершено. Дякую за участь!"
+                yield "Role-play завершено. Дякую за участь!"
+                return
             
             if not state.custom_data.get('progress_notes'):
                 state.custom_data['progress_notes'] = []
@@ -91,32 +93,35 @@ CRITICAL: If you notice you're asking similar questions repeatedly, STOP and mov
             context = WorkflowContext(state=state)
             
             agent = self.create_roleplay_agent(context, specs, template.get("model", "gpt-4o"))
-            result = await Runner.run(agent, user_message, context=context)
-            response = result.final_output_as(str)
+            result = Runner.run_streamed(agent, user_message, context=context)
+            
+            full_response = ""
+            async for event in result.stream_events():
+                if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                    chunk = event.data.delta
+                    full_response += chunk
+                    yield chunk
             
             turn_number = len(state.answers) + 1
             state.answers.append({
                 "user_message": user_message,
-                "agent_response": response,
+                "agent_response": full_response,
                 "timestamp": datetime.now().isoformat(),
                 "turn": turn_number
             })
             
-            self._update_progress_tracking(state, user_message, response)
+            self._update_progress_tracking(state, user_message, full_response)
             
             finish_conditions = specs.get('finish_dialogue_conditions', '')
-            should_finish = self._check_finish_conditions(state, finish_conditions, response)
+            should_finish = self._check_finish_conditions(state, finish_conditions, full_response)
             
             if should_finish:
                 state.status = "finished"
                 await xano.save_workflow_state(state)
                 from models import ChatStatus
                 await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                return response + "\n\n✅ Симуляцію завершено."
-            
-            await xano.save_workflow_state(state)
-            
-            return response
+            else:
+                await xano.save_workflow_state(state)
     
     def _update_progress_tracking(self, state: WorkflowState, user_message: str, agent_response: str):
         keywords_progress = [

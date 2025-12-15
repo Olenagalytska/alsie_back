@@ -1,9 +1,9 @@
 import os
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from dotenv import load_dotenv
 
 from models import StudentMessage, AssistantResponse, ChatStatus
@@ -23,20 +23,26 @@ app = FastAPI(title="EdTech AI Platform", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://www.alsie.app",
-        "https://alsie.app",
-        "https://alsie.webflow.io",
-        "http://localhost:3000",
-        "*"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
 )
 
 xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)
+
+
+@app.options("/{full_path:path}")
+async def options_handler(request: Request, full_path: str):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 
 @app.get("/")
@@ -79,7 +85,15 @@ async def process_student_message(message: StudentMessage):
             last_air_id = messages_data[-1]["id"] if messages_data else 0
             await xano.save_message_pair(message.ub_id, message.content, full_response, last_air_id)
         
-        return StreamingResponse(generate(), media_type="text/plain")
+        return StreamingResponse(
+            generate(), 
+            media_type="text/plain",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
         
     except Exception as e:
         print(f"ERROR: {type(e).__name__}: {str(e)}")

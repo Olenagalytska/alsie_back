@@ -23,10 +23,17 @@ app = FastAPI(title="EdTech AI Platform", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://www.alsie.app",
+        "https://alsie.app",
+        "https://alsie.webflow.io",
+        "http://localhost:3000",
+        "*"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)

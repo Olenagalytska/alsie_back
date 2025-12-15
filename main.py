@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 from dotenv import load_dotenv
 
 from models import StudentMessage, AssistantResponse, ChatStatus
@@ -21,6 +21,30 @@ class Config:
 
 app = FastAPI(title="EdTech AI Platform", version="3.0.0")
 
+
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            content={},
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+    
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,18 +55,6 @@ app.add_middleware(
 )
 
 xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)
-
-
-@app.options("/{full_path:path}")
-async def options_handler(request: Request, full_path: str):
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "*",
-        }
-    )
 
 
 @app.get("/")
@@ -85,15 +97,7 @@ async def process_student_message(message: StudentMessage):
             last_air_id = messages_data[-1]["id"] if messages_data else 0
             await xano.save_message_pair(message.ub_id, message.content, full_response, last_air_id)
         
-        return StreamingResponse(
-            generate(), 
-            media_type="text/plain",
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
-            }
-        )
+        return StreamingResponse(generate(), media_type="text/plain")
         
     except Exception as e:
         print(f"ERROR: {type(e).__name__}: {str(e)}")

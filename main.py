@@ -21,20 +21,19 @@ class Config:
 
 app = FastAPI(title="EdTech AI Platform", version="3.0.0")
 
-# ВИПРАВЛЕННЯ 1: Більш конкретні CORS налаштування
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://www.alsie.app",
         "https://alsie.app",
-        "http://localhost:3000",  # для локальної розробки
-        "http://localhost:8000"   # для локальної розробки
+        "http://localhost:3000",
+        "http://localhost:8000"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=3600,  # Кешування preflight запитів на 1 годину
+    max_age=3600,
 )
 
 xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)
@@ -55,7 +54,6 @@ async def health():
     }
 
 
-# ВИПРАВЛЕННЯ 2: Додаємо явний обробник OPTIONS для preflight
 @app.options("/chat/message")
 async def chat_message_options():
     return {"status": "ok"}
@@ -64,34 +62,54 @@ async def chat_message_options():
 @app.post("/chat/message")
 async def process_student_message(message: StudentMessage):
     try:
+        print(f"=== START: Processing message for ub_id: {message.ub_id} ===")
+        
         session = await xano.get_chat_session(message.ub_id)
         block = await xano.get_block(session["block_id"])
         template_data = await xano.get_template(block["int_template_id"])
         
         template_id = block["int_template_id"]
+        print(f"Template ID: {template_id}")
+        
         workflow_class = get_workflow_class(template_id)
         
         if not workflow_class:
             raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
         
+        print(f"Workflow class: {workflow_class.__name__}")
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
         async def generate():
             full_response = ""
+            print(f"Starting stream for ub_id: {message.ub_id}")
+            chunk_count = 0
+            
             async for chunk in workflow.run_workflow_stream(block, template_data, message.content, message.ub_id, xano):
+                chunk_count += 1
+                print(f"Chunk {chunk_count}: {chunk[:50]}..." if len(chunk) > 50 else f"Chunk {chunk_count}: {chunk}")
                 full_response += chunk
                 yield chunk
             
+            print(f"Stream complete. Total chunks: {chunk_count}")
+            print(f"Full response length: {len(full_response)}")
+            print(f"Full response: {full_response[:200]}..." if len(full_response) > 200 else f"Full response: {full_response}")
+            
             messages_data = await xano.get_messages(message.ub_id)
             last_air_id = messages_data[-1]["id"] if messages_data else 0
-            await xano.save_message_pair(message.ub_id, message.content, full_response, last_air_id)
+            
+            try:
+                await xano.save_message_pair(message.ub_id, message.content, full_response, last_air_id)
+                print("Message pair saved successfully")
+            except Exception as save_error:
+                print(f"Error saving message pair: {save_error}")
         
+        print("Returning StreamingResponse")
         return StreamingResponse(
             generate(), 
             media_type="text/plain",
             headers={
                 "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no"  # Вимикає буферизацію для Nginx
+                "X-Accel-Buffering": "no"
             }
         )
         

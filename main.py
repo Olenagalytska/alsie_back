@@ -68,6 +68,10 @@ async def process_student_message(message: StudentMessage):
         block = await xano.get_block(session["block_id"])
         template_data = await xano.get_template(block["int_template_id"])
         
+        if session.get("status") == "idle":
+            print(f"Updating status from idle to started for ub_id: {message.ub_id}")
+            await xano.update_chat_status(message.ub_id, status=ChatStatus.STARTED)
+        
         template_id = block["int_template_id"]
         print(f"Template ID: {template_id}")
         
@@ -202,12 +206,10 @@ async def get_workflow_state(ub_id: int):
         if state:
             return state.model_dump()
         else:
-            raise HTTPException(status_code=404, detail="Workflow state not found")
-    except HTTPException:
-        raise
+            return {"answers": [], "status": "active", "questions": []}
     except Exception as e:
         print(f"ERROR: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"answers": [], "status": "active", "questions": []}
 
 
 @app.get("/chat/{ub_id}/history")

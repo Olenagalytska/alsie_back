@@ -14,7 +14,7 @@
   ],
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "/(.+)",
       "headers": [
         {
           "key": "Access-Control-Allow-Origin",
@@ -34,10 +34,5 @@
         }
       ]
     }
-  ],
-  "env": {
-    "XANO_BASE_URL": "@xano_base_url",
-    "XANO_API_KEY": "@xano_api_key",
-    "OPENAI_API_KEY": "@openai_api_key"
-  }
+  ]
 }

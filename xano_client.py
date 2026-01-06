@@ -1,20 +1,20 @@
 import httpx
 import json
 import re
-from typing import Dict, Any, List, Optional
+from typing import Optional, List, Dict, Any
 from datetime import datetime
-
-from workflows.base import WorkflowState
-from models import ChatStatus
+from models import WorkflowState, ChatStatus
 
 
 class XanoClient:
-    def __init__(self, base_url: str, api_key: str):
-        self.base_url = base_url.rstrip('/')
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self.client = httpx.AsyncClient(headers=headers, timeout=30.0)
+    def __init__(self, base_url: str):
+        self.base_url = base_url
+        self.client = httpx.AsyncClient(timeout=30.0)
+    
+    async def get_chat_session(self, ub_id: int) -> Dict[str, Any]:
+        response = await self.client.get(f"{self.base_url}/ub_single", params={"ub_id": ub_id})
+        response.raise_for_status()
+        return response.json()
     
     async def get_block(self, block_id: int) -> Dict[str, Any]:
         response = await self.client.get(f"{self.base_url}/block/{block_id}")
@@ -22,41 +22,22 @@ class XanoClient:
         return response.json()
     
     async def get_template(self, template_id: int) -> Dict[str, Any]:
-        response = await self.client.get(f"{self.base_url}/template/{template_id}")
-        response.raise_for_status()
-        return response.json()
-    
-    async def get_chat_session(self, ub_id: int) -> Dict[str, Any]:
-        response = await self.client.get(f"{self.base_url}/ub/{ub_id}")
+        response = await self.client.get(f"{self.base_url}/int_templates/{template_id}")
         response.raise_for_status()
         return response.json()
     
     async def get_workflow_state(self, ub_id: int) -> Optional[WorkflowState]:
-        try:
-            response = await self.client.get(f"{self.base_url}/get_workflow_state/{ub_id}")
-            if response.status_code == 200:
-                data = response.json()
-                if data and not data.get('error'):
-                    data['questions'] = json.loads(data['questions']) if isinstance(data.get('questions'), str) else data.get('questions', [])
-                    data['answers'] = json.loads(data['answers']) if isinstance(data.get('answers'), str) else data.get('answers', [])
-                    data['custom_data'] = json.loads(data['custom_data']) if isinstance(data.get('custom_data'), str) else data.get('custom_data', {})
-                    return WorkflowState(**data)
-        except Exception as e:
-            print(f"Error loading workflow state: {e}")
+        response = await self.client.get(f"{self.base_url}/workflow_state", params={"ub_id": ub_id})
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                return WorkflowState(**data)
         return None
     
-    async def save_workflow_state(self, state: WorkflowState):
-        data = {
-            "ub_id": state.ub_id,
-            "block_id": state.block_id,
-            "current_question_index": state.current_question_index,
-            "questions": json.dumps(state.questions, ensure_ascii=False),
-            "answers": json.dumps(state.answers, ensure_ascii=False),
-            "follow_up_count": state.follow_up_count,
-            "max_follow_ups": state.max_follow_ups,
-            "status": state.status,
-            "custom_data": json.dumps(state.custom_data, ensure_ascii=False)
-        }
+    async def save_workflow_state(self, state: WorkflowState) -> Optional[Dict[str, Any]]:
+        data = state.model_dump()
+        data["answers"] = json.dumps(data["answers"])
+        data["questions"] = json.dumps(data["questions"])
         response = await self.client.post(f"{self.base_url}/save_workflow_state", json=data)
         return response.json() if response.status_code in [200, 201] else None
     
@@ -98,7 +79,53 @@ class XanoClient:
         
         return None
     
-    async def update_chat_status(self, ub_id: int, status: Optional[ChatStatus] = None, grade: Optional[str] = None, last_air_id: Optional[int] = None):
+    def _parse_grading_output(self, evaluation_text: str) -> List[Dict[str, Any]]:
+        grading_output = []
+        
+        criterion_pattern = r'##\s*Criterion\s*\d+[:\s]*([^\n]+)\n(.*?)(?=##\s*Criterion|\#\s*Summary|$)'
+        matches = re.findall(criterion_pattern, evaluation_text, re.DOTALL | re.IGNORECASE)
+        
+        for match in matches:
+            criterion_name = match[0].strip()
+            criterion_block = match[1]
+            
+            grade_pattern = r'\*\*Grade:\*\*\s*(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*points?'
+            grade_match = re.search(grade_pattern, criterion_block, re.IGNORECASE)
+            
+            grade = 0
+            max_points = 0
+            if grade_match:
+                try:
+                    grade = float(grade_match.group(1))
+                    max_points = float(grade_match.group(2))
+                except ValueError:
+                    pass
+            
+            assessment_pattern = r'\*\*Assessment:\*\*\s*([^\*]+?)(?=\*\*|$)'
+            assessment_match = re.search(assessment_pattern, criterion_block, re.DOTALL | re.IGNORECASE)
+            assessment = assessment_match.group(1).strip() if assessment_match else ""
+            
+            reasoning_pattern = r'\*\*Reasoning:\*\*\s*([^\*]+?)(?=\*\*|$)'
+            reasoning_match = re.search(reasoning_pattern, criterion_block, re.DOTALL | re.IGNORECASE)
+            reasoning = reasoning_match.group(1).strip() if reasoning_match else ""
+            
+            grading_output.append({
+                "criterion_name": criterion_name,
+                "grade": int(grade) if grade == int(grade) else grade,
+                "max_points": int(max_points) if max_points == int(max_points) else max_points,
+                "summary": assessment[:500] if assessment else "",
+                "grading_comment": reasoning[:500] if reasoning else ""
+            })
+        
+        return grading_output
+    
+    async def update_chat_status(
+        self, 
+        ub_id: int, 
+        status: Optional[ChatStatus] = None, 
+        grade: Optional[str] = None, 
+        last_air_id: Optional[int] = None
+    ):
         update_data = {"ub_id": int(ub_id)}
         
         if status:
@@ -113,12 +140,19 @@ class XanoClient:
                 print(f"Extracted score: {score}")
             else:
                 print("Could not extract numerical score from evaluation")
+            
+            grading_output = self._parse_grading_output(grade)
+            if grading_output:
+                update_data["grading_output"] = grading_output
+                print(f"Parsed {len(grading_output)} criteria into grading_output")
+            else:
+                print("Could not parse grading_output from evaluation")
         
         if last_air_id:
             update_data["last_air_id"] = int(last_air_id)
         
         try:
-            print(f"Updating UB {ub_id} with data: {update_data}")
+            print(f"Updating UB {ub_id} with data keys: {list(update_data.keys())}")
             response = await self.client.post(f"{self.base_url}/update_ub", json=update_data)
             if response.status_code in [200, 201]:
                 result = response.json()

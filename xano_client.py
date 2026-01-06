@@ -1,20 +1,20 @@
 import httpx
 import json
 import re
-from typing import Optional, List, Dict, Any
+from typing import Dict, Any, List, Optional
 from datetime import datetime
-from models import WorkflowState, ChatStatus
+
+from workflows.base import WorkflowState
+from models import ChatStatus
 
 
 class XanoClient:
-    def __init__(self, base_url: str):
-        self.base_url = base_url
-        self.client = httpx.AsyncClient(timeout=30.0)
-    
-    async def get_chat_session(self, ub_id: int) -> Dict[str, Any]:
-        response = await self.client.get(f"{self.base_url}/ub_single", params={"ub_id": ub_id})
-        response.raise_for_status()
-        return response.json()
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip('/')
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        self.client = httpx.AsyncClient(headers=headers, timeout=30.0)
     
     async def get_block(self, block_id: int) -> Dict[str, Any]:
         response = await self.client.get(f"{self.base_url}/block/{block_id}")
@@ -22,22 +22,41 @@ class XanoClient:
         return response.json()
     
     async def get_template(self, template_id: int) -> Dict[str, Any]:
-        response = await self.client.get(f"{self.base_url}/int_templates/{template_id}")
+        response = await self.client.get(f"{self.base_url}/template/{template_id}")
+        response.raise_for_status()
+        return response.json()
+    
+    async def get_chat_session(self, ub_id: int) -> Dict[str, Any]:
+        response = await self.client.get(f"{self.base_url}/ub/{ub_id}")
         response.raise_for_status()
         return response.json()
     
     async def get_workflow_state(self, ub_id: int) -> Optional[WorkflowState]:
-        response = await self.client.get(f"{self.base_url}/workflow_state", params={"ub_id": ub_id})
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                return WorkflowState(**data)
+        try:
+            response = await self.client.get(f"{self.base_url}/get_workflow_state/{ub_id}")
+            if response.status_code == 200:
+                data = response.json()
+                if data and not data.get('error'):
+                    data['questions'] = json.loads(data['questions']) if isinstance(data.get('questions'), str) else data.get('questions', [])
+                    data['answers'] = json.loads(data['answers']) if isinstance(data.get('answers'), str) else data.get('answers', [])
+                    data['custom_data'] = json.loads(data['custom_data']) if isinstance(data.get('custom_data'), str) else data.get('custom_data', {})
+                    return WorkflowState(**data)
+        except Exception as e:
+            print(f"Error loading workflow state: {e}")
         return None
     
-    async def save_workflow_state(self, state: WorkflowState) -> Optional[Dict[str, Any]]:
-        data = state.model_dump()
-        data["answers"] = json.dumps(data["answers"])
-        data["questions"] = json.dumps(data["questions"])
+    async def save_workflow_state(self, state: WorkflowState):
+        data = {
+            "ub_id": state.ub_id,
+            "block_id": state.block_id,
+            "current_question_index": state.current_question_index,
+            "questions": json.dumps(state.questions, ensure_ascii=False),
+            "answers": json.dumps(state.answers, ensure_ascii=False),
+            "follow_up_count": state.follow_up_count,
+            "max_follow_ups": state.max_follow_ups,
+            "status": state.status,
+            "custom_data": json.dumps(state.custom_data, ensure_ascii=False)
+        }
         response = await self.client.post(f"{self.base_url}/save_workflow_state", json=data)
         return response.json() if response.status_code in [200, 201] else None
     

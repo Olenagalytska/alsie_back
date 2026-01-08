@@ -1,5 +1,5 @@
 import httpx
-from typing import Optional, Dict, Any, AsyncIterator
+from typing import Optional, Dict, Any
 from dataclasses import dataclass
 
 
@@ -32,17 +32,27 @@ class ChatKitClient:
         expires_after: int = 3600,
         max_requests_per_minute: int = 30
     ) -> ChatKitSession:
+        request_body = {
+            "workflow": {"id": workflow_id},
+            "user": user_id,
+            "expires_after": expires_after,
+            "max_requests_per_1_minute": max_requests_per_minute
+        }
+        
+        print(f"Creating ChatKit session with workflow_id: {workflow_id}, user_id: {user_id}")
+        
         response = await self.client.post(
             f"{self.base_url}/sessions",
             headers=self._headers(),
-            json={
-                "workflow": {"id": workflow_id},
-                "user": user_id,
-                "expires_after": expires_after,
-                "max_requests_per_1_minute": max_requests_per_minute
-            }
+            json=request_body
         )
-        response.raise_for_status()
+        
+        if response.status_code != 200:
+            error_text = response.text
+            print(f"ChatKit API error: {response.status_code}")
+            print(f"Response body: {error_text}")
+            response.raise_for_status()
+        
         data = response.json()
         
         return ChatKitSession(

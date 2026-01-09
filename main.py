@@ -22,7 +22,7 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
-app = FastAPI(title="EdTech AI Platform", version="4.0.0")
+app = FastAPI(title="EdTech AI Platform", version="4.0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,7 +57,7 @@ class ChatKitSessionResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"status": "operational", "version": "4.0.0", "chatkit_enabled": True}
+    return {"status": "operational", "version": "4.0.1", "chatkit_enabled": True}
 
 
 @app.get("/health")
@@ -96,9 +96,7 @@ async def create_chatkit_session(request: ChatKitSessionRequest):
         
         chatkit_session = await chatkit.create_session(
             workflow_id=workflow_id,
-            user_id=request.user_id,
-            expires_after=3600,
-            max_requests_per_minute=30
+            user_id=request.user_id
         )
         
         return ChatKitSessionResponse(
@@ -142,6 +140,7 @@ async def process_student_message(message: StudentMessage):
         session = await xano.get_chat_session(message.ub_id)
         block = await xano.get_block(session["block_id"])
         
+        # Якщо є workflow_id - повідомити що потрібно використовувати ChatKit
         if block.get("workflow_id"):
             raise HTTPException(
                 status_code=400, 

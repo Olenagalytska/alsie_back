@@ -29,14 +29,11 @@ class ChatKitClient:
         self, 
         workflow_id: str, 
         user_id: str,
-        expires_after: int = 3600,
-        max_requests_per_minute: int = 30
+        expires_after: int = 3600
     ) -> ChatKitSession:
         request_body = {
             "workflow": {"id": workflow_id},
-            "user": user_id,
-            "expires_after": expires_after,
-            "max_requests_per_1_minute": max_requests_per_minute
+            "user": user_id
         }
         
         print(f"Creating ChatKit session with workflow_id: {workflow_id}, user_id: {user_id}")

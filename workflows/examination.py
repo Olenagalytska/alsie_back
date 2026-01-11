@@ -27,7 +27,7 @@ class ExaminationWorkflow(BaseWorkflow):
                 return f"""You are conducting an oral exam. The student gave a partial answer.
 
 Question: {current_q['question']}
-Student's previous answer: {last_answer.get('answer', '')}
+Student's previous answer: {last_answer.get('user_message', '')}
 
 Ask a NATURAL follow-up question that:
 - Encourages the student to elaborate or clarify
@@ -64,7 +64,7 @@ Be professional and neutral."""
 
 QUESTION: {current_q['question']}
 KEY CONCEPTS: {current_q['key_concepts']}
-STUDENT ANSWER: {last_answer.get('answer', '')}
+STUDENT ANSWER: {last_answer.get('user_message', '')}
 
 EVALUATION RULES:
 1. Check if the answer SEMANTICALLY covers the key concepts
@@ -116,6 +116,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
             
             context = WorkflowContext(state=state)
             
+            # Перша відповідь або попередня була завершена - ставимо нове питання
             if not state.answers or state.answers[-1].get('evaluation', {}).get('complete', False):
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                 result = Runner.run_streamed(interviewer, "", context=context)
@@ -127,9 +128,11 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         full_response += chunk
                         yield chunk
                 
+                # УНІФІКОВАНО: використовуємо user_message та assistant_response
                 state.answers.append({
+                    "user_message": "",
+                    "assistant_response": full_response,
                     "question_index": state.current_question_index,
-                    "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "evaluation": {}
                 })
@@ -137,9 +140,11 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 await xano.save_workflow_state(state)
                 return
             
-            state.answers[-1]['answer'] = user_message
+            # Зберігаємо відповідь студента
+            state.answers[-1]['user_message'] = user_message
             state.answers[-1]['timestamp'] = datetime.now().isoformat()
             
+            # Оцінюємо відповідь
             evaluator = self.create_evaluator_agent(context, template.get("model", "gpt-4o"))
             eval_result = await Runner.run(evaluator, "", context=context)
             evaluation = eval_result.final_output.model_dump()
@@ -147,6 +152,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
             state.answers[-1]['evaluation'] = evaluation
             
             if evaluation['complete']:
+                # Відповідь повна - переходимо до наступного питання
                 state.current_question_index += 1
                 state.follow_up_count = 0
                 
@@ -155,11 +161,12 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     await xano.save_workflow_state(state)
                     from models import ChatStatus
                     await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                    yield "Вітаю! Ви відповіді на всі питання. Іспит завершено."
+                    yield "Вітаю! Ви відповіли на всі питання. Іспит завершено."
                     return
                 
                 await xano.save_workflow_state(state)
                 
+                # Ставимо наступне питання
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                 result = Runner.run_streamed(interviewer, "", context=context)
                 
@@ -170,9 +177,11 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         full_response += chunk
                         yield chunk
                 
+                # УНІФІКОВАНО
                 state.answers.append({
+                    "user_message": "",
+                    "assistant_response": full_response,
                     "question_index": state.current_question_index,
-                    "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "evaluation": {}
                 })
@@ -180,7 +189,9 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 return
             
             else:
+                # Відповідь неповна
                 if state.follow_up_count >= state.max_follow_ups:
+                    # Вичерпано follow-ups - переходимо до наступного питання
                     state.current_question_index += 1
                     state.follow_up_count = 0
                     
@@ -204,9 +215,11 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                             full_response += chunk
                             yield chunk
                     
+                    # УНІФІКОВАНО
                     state.answers.append({
+                        "user_message": "",
+                        "assistant_response": full_response,
                         "question_index": state.current_question_index,
-                        "answer": "",
                         "timestamp": datetime.now().isoformat(),
                         "evaluation": {}
                     })
@@ -214,15 +227,30 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     return
                 
                 else:
+                    # Є ще follow-ups - задаємо уточнююче питання
                     state.follow_up_count += 1
                     await xano.save_workflow_state(state)
                     
                     interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                     result = Runner.run_streamed(interviewer, "Student answer was incomplete. Ask a follow-up question to clarify.", context=context)
                     
+                    full_response = ""
                     async for event in result.stream_events():
                         if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                            yield event.data.delta
+                            chunk = event.data.delta
+                            full_response += chunk
+                            yield chunk
+                    
+                    # Додаємо follow-up як нову відповідь
+                    state.answers.append({
+                        "user_message": "",
+                        "assistant_response": full_response,
+                        "question_index": state.current_question_index,
+                        "timestamp": datetime.now().isoformat(),
+                        "evaluation": {},
+                        "is_follow_up": True
+                    })
+                    await xano.save_workflow_state(state)
     
     async def run_evaluation(
         self,
@@ -260,26 +288,31 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 for i, ans in enumerate(ctx.workflow_state.answers):
                     q_index = ans.get('question_index', i)
                     
+                    conversation_text += f"\n{'='*60}\n"
+                    conversation_text += f"Exchange {i+1}:\n"
+                    conversation_text += f"{'='*60}\n\n"
+                    
+                    # AI question/response
+                    if ans.get('assistant_response'):
+                        conversation_text += f"**AI:** {ans['assistant_response']}\n\n"
+                    
+                    # Student answer
+                    if ans.get('user_message'):
+                        conversation_text += f"**Student:** {ans['user_message']}\n\n"
+                    
+                    # Question info
                     if q_index < len(ctx.workflow_state.questions):
                         question = ctx.workflow_state.questions[q_index]
-                        
-                        conversation_text += f"\n{'='*60}\n"
-                        conversation_text += f"Exchange {i+1}:\n"
-                        conversation_text += f"{'='*60}\n\n"
-                        conversation_text += f"**Question:** {question.get('question', 'N/A')}\n"
                         conversation_text += f"**Expected key concepts:** {question.get('key_concepts', 'N/A')}\n\n"
-                        conversation_text += f"**Student answer:** {ans.get('answer', 'No answer provided')}\n\n"
-                        
-                        evaluation = ans.get('evaluation', {})
-                        if evaluation:
-                            conversation_text += f"**Workflow evaluation:**\n"
-                            conversation_text += f"  - Answer was complete: {evaluation.get('complete', False)}\n"
-                            if evaluation.get('missing_concepts'):
-                                conversation_text += f"  - Missing concepts: {', '.join(evaluation.get('missing_concepts', []))}\n"
-                            if evaluation.get('needs_clarification'):
-                                conversation_text += f"  - Needed clarification: {evaluation.get('needs_clarification', False)}\n"
-                        
-                        conversation_text += "\n"
+                    
+                    evaluation = ans.get('evaluation', {})
+                    if evaluation:
+                        conversation_text += f"**Evaluation:**\n"
+                        conversation_text += f"  - Complete: {evaluation.get('complete', False)}\n"
+                        if evaluation.get('missing_concepts'):
+                            conversation_text += f"  - Missing: {', '.join(evaluation.get('missing_concepts', []))}\n"
+                    
+                    conversation_text += "\n"
                 
                 return f"""You are an evaluation assistant for an educational platform.
 

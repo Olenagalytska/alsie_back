@@ -27,7 +27,7 @@ class RoleplayWorkflow(BaseWorkflow):
                 last_messages = "\n# Recent Conversation (last 3 turns)\n"
                 for ans in ctx.state.answers[-3:]:
                     last_messages += f"Student: {ans.get('user_message', '')[:100]}...\n"
-                    last_messages += f"You: {ans.get('agent_response', '')[:100]}...\n\n"
+                    last_messages += f"You: {ans.get('assistant_response', '')[:100]}...\n\n"
             
             progress_notes = ctx.state.custom_data.get('progress_notes', [])
             progress_text = ""
@@ -103,9 +103,11 @@ CRITICAL: If you notice you're asking similar questions repeatedly, STOP and mov
                     yield chunk
             
             turn_number = len(state.answers) + 1
+            
+            # УНІФІКОВАНО: використовуємо user_message та assistant_response
             state.answers.append({
                 "user_message": user_message,
-                "agent_response": full_response,
+                "assistant_response": full_response,
                 "timestamp": datetime.now().isoformat(),
                 "turn": turn_number
             })
@@ -176,7 +178,7 @@ CRITICAL: If you notice you're asking similar questions repeatedly, STOP and mov
                     return True
         
         if turn_count >= 5:
-            last_agent_responses = [ans.get('agent_response', '') for ans in state.answers[-3:]]
+            last_agent_responses = [ans.get('assistant_response', '') for ans in state.answers[-3:]]
             
             if len(set(resp[:50] for resp in last_agent_responses)) <= 1:
                 return True
@@ -210,36 +212,36 @@ CRITICAL: If you notice you're asking similar questions repeatedly, STOP and mov
                         criteria_text += f": {crit['criterion_name']}"
                     criteria_text += f"\nMax Points: {crit.get('max_points', 0)}\n"
                     if crit.get('summary_instructions'):
-                        criteria_text += f"Summary: {crit['summary_instructions']}\n"
+                        criteria_text += f"Summary Instructions: {crit['summary_instructions']}\n"
                     if crit.get('grading_instructions'):
-                        criteria_text += f"Grading: {crit['grading_instructions']}\n"
+                        criteria_text += f"Grading Instructions: {crit['grading_instructions']}\n"
+                    criteria_text += "\n"
 
                 conversation_text = ""
                 for i, ans in enumerate(ctx.workflow_state.answers):
-                    conversation_text += f"\n### Turn {ans.get('turn', i+1)}\n"
-                    conversation_text += f"**Student:** {ans.get('user_message', 'N/A')}\n"
-                    conversation_text += f"**Agent:** {ans.get('agent_response', 'N/A')}\n\n"
+                    conversation_text += f"\n{'='*60}\n"
+                    conversation_text += f"Turn {ans.get('turn', i+1)}:\n"
+                    conversation_text += f"{'='*60}\n\n"
+                    conversation_text += f"**Student:** {ans.get('user_message', 'N/A')}\n\n"
+                    conversation_text += f"**Agent:** {ans.get('assistant_response', 'N/A')}\n\n"
                 
-                return f"""{ctx.eval_instructions}
+                return f"""You are an evaluation assistant for an educational role-play platform.
 
-# Role-play Conversation
+{ctx.eval_instructions}
+
+# Conversation History
 {conversation_text}
 
 # Evaluation Criteria
 {criteria_text}
 
-# Additional Context
-Total turns: {len(ctx.workflow_state.answers)}
-Status: {ctx.workflow_state.status}
-
 # Your Task
 
-Evaluate the student's performance in the role-play based on the criteria.
-Consider both the quality of responses and whether the conversation progressed naturally without getting stuck.
+Evaluate the student's performance in the role-play according to the provided criteria.
 
 For each criterion:
-1. Review the role-play conversation
-2. Assess how well the student met the criterion
+1. Review how the student engaged with the scenario
+2. Assess their communication skills, problem-solving, and role-play engagement
 3. Assign a grade (0 to max_points for that criterion)
 4. Provide clear reasoning
 
@@ -250,17 +252,12 @@ Format your response as:
 ## Criterion 1: [Name]
 **Assessment:** [Detailed assessment]
 **Grade:** X/Y points
-**Reasoning:** [Why this grade was assigned]
-
-## Criterion 2: [Name]
-**Assessment:** [Detailed assessment]
-**Grade:** X/Y points
 **Reasoning:** [Explanation]
 
 # Summary
 **Total Score:** X/{total_max_points} points
 **Overall Performance:** [Brief summary]
-**Recommendations:** [Optional suggestions]"""
+**Recommendations:** [Suggestions for improvement]"""
             
             agent = Agent[EvaluationContext](
                 name="RoleplayEvaluator",

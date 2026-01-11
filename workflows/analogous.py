@@ -22,17 +22,23 @@ class AnalogousWorkflow(BaseWorkflow):
             
             topic = ""
             if ctx.state.answers:
-                first_answer = ctx.state.answers[0]
-                topic = first_answer.get('topic', '')
+                for ans in ctx.state.answers:
+                    if ans.get('topic'):
+                        topic = ans.get('topic')
+                        break
             
             conversation_history = ""
-            if len(ctx.state.answers) > 1:
+            if len(ctx.state.answers) > 0:
                 conversation_history = "\n# Recent conversation:\n"
-                for ans in ctx.state.answers[-3:]:
+                for ans in ctx.state.answers[-5:]:
                     if ans.get('user_message'):
                         conversation_history += f"Student: {ans['user_message']}\n"
                     if ans.get('tutor_response'):
                         conversation_history += f"You: {ans['tutor_response']}\n"
+                    if ans.get('assignment'):
+                        conversation_history += f"You: {ans['assignment']}\n"
+                    if ans.get('answer'):
+                        conversation_history += f"Student answer: {ans['answer']}\n"
             
             last_answer = ctx.state.answers[-1] if ctx.state.answers else {}
             
@@ -247,15 +253,72 @@ Return JSON:
             context = WorkflowContext(state=state)
             
             if len(state.answers) == 0:
+                tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                result = Runner.run_streamed(tutor, "", context=context)
+                
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
+                
                 state.answers.append({
                     "assignment_index": 0,
                     "topic": "",
-                    "assignment": "",
+                    "assignment": full_response,
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "graded": False,
                     "waiting_for_topic": True,
-                    "user_message": "",
+                    "user_message": user_message if user_message else "",
+                    "tutor_response": ""
+                })
+                await xano.save_workflow_state(state)
+                return
+            
+            last_answer = state.answers[-1] if state.answers else {}
+            
+            if last_answer.get('waiting_for_topic'):
+                topic = user_message.strip()
+                
+                if len(topic.split()) <= 2 or '?' in topic:
+                    state.answers.append({
+                        "assignment_index": 0,
+                        "topic": "",
+                        "assignment": "",
+                        "answer": "",
+                        "timestamp": datetime.now().isoformat(),
+                        "graded": False,
+                        "waiting_for_topic": True,
+                        "user_message": user_message,
+                        "tutor_response": ""
+                    })
+                    
+                    tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                    result = Runner.run_streamed(tutor, user_message, context=context)
+                    
+                    full_response = ""
+                    async for event in result.stream_events():
+                        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                            chunk = event.data.delta
+                            full_response += chunk
+                            yield chunk
+                    
+                    state.answers[-1]['tutor_response'] = full_response
+                    await xano.save_workflow_state(state)
+                    return
+                
+                state.answers.append({
+                    "assignment_index": 0,
+                    "topic": topic,
+                    "assignment": "",
+                    "answer": "",
+                    "timestamp": datetime.now().isoformat(),
+                    "graded": False,
+                    "waiting_for_topic": False,
+                    "waiting_for_answer": True,
+                    "user_message": user_message,
                     "tutor_response": ""
                 })
                 
@@ -269,47 +332,7 @@ Return JSON:
                         full_response += chunk
                         yield chunk
                 
-                state.answers[0]['assignment'] = full_response
-                await xano.save_workflow_state(state)
-                return
-            
-            last_answer = state.answers[-1] if state.answers else {}
-            
-            if last_answer.get('waiting_for_topic'):
-                topic = user_message.strip()
-                
-                if len(topic.split()) <= 2 or '?' in topic:
-                    last_answer['user_message'] = user_message
-                    
-                    tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                    result = Runner.run_streamed(tutor, user_message, context=context)
-                    
-                    full_response = ""
-                    async for event in result.stream_events():
-                        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                            chunk = event.data.delta
-                            full_response += chunk
-                            yield chunk
-                    
-                    last_answer['tutor_response'] = full_response
-                    await xano.save_workflow_state(state)
-                    return
-                
-                last_answer['topic'] = topic
-                last_answer['waiting_for_topic'] = False
-                last_answer['waiting_for_answer'] = True
-                
-                tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
-                result = Runner.run_streamed(tutor, "", context=context)
-                
-                full_response = ""
-                async for event in result.stream_events():
-                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                        chunk = event.data.delta
-                        full_response += chunk
-                        yield chunk
-                
-                last_answer['assignment'] = full_response
+                state.answers[-1]['assignment'] = full_response
                 await xano.save_workflow_state(state)
                 return
             
@@ -332,7 +355,23 @@ Return JSON:
                 seems_incomplete = answer_length < assignment_length * 0.3
                 
                 if is_question or is_short_response or seems_incomplete:
-                    last_answer['user_message'] = user_message
+                    topic = ""
+                    for ans in state.answers:
+                        if ans.get('topic'):
+                            topic = ans.get('topic')
+                            break
+                    
+                    state.answers.append({
+                        "assignment_index": state.current_question_index,
+                        "topic": topic,
+                        "assignment": last_answer.get('assignment', ''),
+                        "answer": "",
+                        "timestamp": datetime.now().isoformat(),
+                        "graded": False,
+                        "waiting_for_answer": True,
+                        "user_message": user_message,
+                        "tutor_response": ""
+                    })
                     
                     tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                     result = Runner.run_streamed(tutor, user_message, context=context)
@@ -344,7 +383,7 @@ Return JSON:
                             full_response += chunk
                             yield chunk
                     
-                    last_answer['tutor_response'] = full_response
+                    state.answers[-1]['tutor_response'] = full_response
                     await xano.save_workflow_state(state)
                     return
                 
@@ -373,7 +412,11 @@ Return JSON:
                         full_response += chunk
                         yield chunk
                 
-                topic = state.answers[0].get('topic', '')
+                topic = ""
+                for ans in state.answers:
+                    if ans.get('topic'):
+                        topic = ans.get('topic')
+                        break
                 
                 state.answers.append({
                     "assignment_index": state.current_question_index,
@@ -387,7 +430,6 @@ Return JSON:
                     "tutor_response": ""
                 })
                 await xano.save_workflow_state(state)
-                return
             
             else:
                 tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
@@ -400,7 +442,11 @@ Return JSON:
                         full_response += chunk
                         yield chunk
                 
-                topic = state.answers[0].get('topic', '') if state.answers else ''
+                topic = ""
+                for ans in state.answers:
+                    if ans.get('topic'):
+                        topic = ans.get('topic')
+                        break
                 
                 state.answers.append({
                     "assignment_index": state.current_question_index,
@@ -447,7 +493,7 @@ Return JSON:
             
             def agent_instructions(run_context: RunContextWrapper[EvaluationContext], _agent: Agent):
                 ctx = run_context.context
-                
+            
                 assignments_text = ""
                 completed_count = 0
                 correct_count = 0

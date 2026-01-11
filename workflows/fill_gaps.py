@@ -473,7 +473,7 @@ Format your response as:
                 model_settings=ModelSettings(temperature=0.3, max_tokens=2048)
             )
             
-            result = await Runner.run(agent, "", context=context)
+            result = await Runner.run(agent, "Please evaluate the student's performance based on the assignments and criteria provided in the instructions.", context=context)
             evaluation_text = result.final_output_as(str)
             
             if isinstance(evaluation_text, str):

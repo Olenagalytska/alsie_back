@@ -1,3 +1,6 @@
+# workflows/examination.py - FIXED VERSION
+# FIX: Зберігаємо interviewer_question в answers
+
 from typing import Dict, List, Any, AsyncGenerator
 from datetime import datetime
 from pydantic import BaseModel
@@ -116,6 +119,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
             
             context = WorkflowContext(state=state)
             
+            # Якщо немає відповідей АБО остання відповідь завершена - задаємо нове питання
             if not state.answers or state.answers[-1].get('evaluation', {}).get('complete', False):
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                 result = Runner.run_streamed(interviewer, "", context=context)
@@ -127,8 +131,10 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         full_response += chunk
                         yield chunk
                 
+                # FIX: Зберігаємо interviewer_question разом з answer
                 state.answers.append({
                     "question_index": state.current_question_index,
+                    "interviewer_question": full_response,  # ← FIX: Зберігаємо AI питання!
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "evaluation": {}
@@ -137,9 +143,11 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 await xano.save_workflow_state(state)
                 return
             
+            # Студент відповідає
             state.answers[-1]['answer'] = user_message
             state.answers[-1]['timestamp'] = datetime.now().isoformat()
             
+            # Оцінюємо відповідь
             evaluator = self.create_evaluator_agent(context, template.get("model", "gpt-4o"))
             eval_result = await Runner.run(evaluator, "", context=context)
             evaluation = eval_result.final_output.model_dump()
@@ -147,6 +155,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
             state.answers[-1]['evaluation'] = evaluation
             
             if evaluation['complete']:
+                # Відповідь повна - переходимо до наступного питання
                 state.current_question_index += 1
                 state.follow_up_count = 0
                 
@@ -155,11 +164,12 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     await xano.save_workflow_state(state)
                     from models import ChatStatus
                     await xano.update_chat_status(ub_id, status=ChatStatus.FINISHED)
-                    yield "Вітаю! Ви відповіді на всі питання. Іспит завершено."
+                    yield "Вітаю! Ви відповіли на всі питання. Іспит завершено."
                     return
                 
                 await xano.save_workflow_state(state)
                 
+                # Задаємо наступне питання
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                 result = Runner.run_streamed(interviewer, "", context=context)
                 
@@ -170,8 +180,10 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         full_response += chunk
                         yield chunk
                 
+                # FIX: Зберігаємо interviewer_question
                 state.answers.append({
                     "question_index": state.current_question_index,
+                    "interviewer_question": full_response,  # ← FIX!
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "evaluation": {}
@@ -180,7 +192,9 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 return
             
             else:
+                # Відповідь неповна
                 if state.follow_up_count >= state.max_follow_ups:
+                    # Вичерпали follow-ups - переходимо далі
                     state.current_question_index += 1
                     state.follow_up_count = 0
                     
@@ -204,8 +218,10 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                             full_response += chunk
                             yield chunk
                     
+                    # FIX: Зберігаємо interviewer_question
                     state.answers.append({
                         "question_index": state.current_question_index,
+                        "interviewer_question": full_response,  # ← FIX!
                         "answer": "",
                         "timestamp": datetime.now().isoformat(),
                         "evaluation": {}
@@ -214,15 +230,23 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     return
                 
                 else:
+                    # Задаємо follow-up питання
                     state.follow_up_count += 1
                     await xano.save_workflow_state(state)
                     
                     interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                     result = Runner.run_streamed(interviewer, "Student answer was incomplete. Ask a follow-up question to clarify.", context=context)
                     
+                    full_response = ""
                     async for event in result.stream_events():
                         if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                            yield event.data.delta
+                            chunk = event.data.delta
+                            full_response += chunk
+                            yield chunk
+                    
+                    # FIX: Оновлюємо останній answer з follow-up питанням
+                    state.answers[-1]['follow_up_question'] = full_response  # ← FIX!
+                    await xano.save_workflow_state(state)
     
     async def run_evaluation(
         self,
@@ -267,6 +291,9 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         conversation_text += f"Exchange {i+1}:\n"
                         conversation_text += f"{'='*60}\n\n"
                         conversation_text += f"**Question:** {question.get('question', 'N/A')}\n"
+                        # FIX: Також показуємо interviewer_question якщо є
+                        if ans.get('interviewer_question'):
+                            conversation_text += f"**Interviewer asked:** {ans['interviewer_question']}\n"
                         conversation_text += f"**Expected key concepts:** {question.get('key_concepts', 'N/A')}\n\n"
                         conversation_text += f"**Student answer:** {ans.get('answer', 'No answer provided')}\n\n"
                         
@@ -299,38 +326,31 @@ For each criterion:
 1. Review the student's answers and the workflow evaluation results
 2. Assess how well they met the criterion
 3. Assign a grade (0 to max_points for that criterion)
-4. Provide clear reasoning
+4. Provide brief feedback
 
-Format your response as:
+Total maximum points available: {total_max_points}
 
-# Evaluation Report
+Format your response as a clear evaluation report with:
+- Score for each criterion
+- Brief justification
+- Total score
+- Overall feedback and recommendations"""
 
-## Criterion 1: [Name]
-**Assessment:** [Detailed assessment based on answers]
-**Grade:** X/Y points
-**Reasoning:** [Why this grade was assigned]
-
-## Criterion 2: [Name]
-**Assessment:** [Detailed assessment]
-**Grade:** X/Y points
-**Reasoning:** [Explanation]
-
-# Summary
-**Total Score:** X/{total_max_points} points
-**Overall Performance:** [Brief summary]
-**Recommendations:** [Optional suggestions for improvement]"""
-            
-            agent = Agent[EvaluationContext](
-                name="ExaminationEvaluator",
+            evaluator = Agent[EvaluationContext](
+                name="FinalEvaluator",
                 instructions=agent_instructions,
                 model=model,
                 model_settings=ModelSettings(temperature=0.3, max_tokens=2048)
             )
             
-            result = await Runner.run(agent, "", context=context)
-            evaluation_text = result.final_output_as(str)
-            
-            if isinstance(evaluation_text, str):
-                evaluation_text = evaluation_text.strip()
-            
-            return evaluation_text
+            result = await Runner.run(evaluator, "", context=context)
+            return result.final_output
+    
+    def _calculate_total_points(self, criteria: List[Dict[str, Any]]) -> int:
+        total = 0
+        for crit in criteria:
+            try:
+                total += int(crit.get('max_points', 0))
+            except (ValueError, TypeError):
+                pass
+        return total

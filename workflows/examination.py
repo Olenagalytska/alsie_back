@@ -116,7 +116,6 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
             
             context = WorkflowContext(state=state)
             
-            # CASE 1: Need to ask a new question (no answers yet OR last answer was complete)
             if not state.answers or state.answers[-1].get('evaluation', {}).get('complete', False):
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                 result = Runner.run_streamed(interviewer, "", context=context)
@@ -128,11 +127,10 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         full_response += chunk
                         yield chunk
                 
-                # FIX: Save interviewer_question and user_message for chat history restoration
                 state.answers.append({
                     "question_index": state.current_question_index,
-                    "interviewer_question": full_response,  # ADDED: Save AI question for frontend
-                    "user_message": user_message if user_message else "",  # ADDED: Save user's greeting (e.g., "привіт")
+                    "interviewer_question": full_response,
+                    "user_message": user_message if user_message else "",
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
                     "evaluation": {}
@@ -141,9 +139,7 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 await xano.save_workflow_state(state)
                 return
             
-            # CASE 2: Student is answering a question
             state.answers[-1]['answer'] = user_message
-            state.answers[-1]['user_message'] = user_message  # ADDED: Also save as user_message for consistency
             state.answers[-1]['timestamp'] = datetime.now().isoformat()
             
             evaluator = self.create_evaluator_agent(context, template.get("model", "gpt-4o"))
@@ -166,7 +162,6 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 
                 await xano.save_workflow_state(state)
                 
-                # Ask next question
                 interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                 result = Runner.run_streamed(interviewer, "", context=context)
                 
@@ -177,10 +172,9 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                         full_response += chunk
                         yield chunk
                 
-                # FIX: Save interviewer_question for next question
                 state.answers.append({
                     "question_index": state.current_question_index,
-                    "interviewer_question": full_response,  # ADDED
+                    "interviewer_question": full_response,
                     "user_message": "",
                     "answer": "",
                     "timestamp": datetime.now().isoformat(),
@@ -190,7 +184,6 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                 return
             
             else:
-                # Answer incomplete - ask follow-up or move on
                 if state.follow_up_count >= state.max_follow_ups:
                     state.current_question_index += 1
                     state.follow_up_count = 0
@@ -205,7 +198,6 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     
                     await xano.save_workflow_state(state)
                     
-                    # Ask next question after max follow-ups
                     interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                     result = Runner.run_streamed(interviewer, "", context=context)
                     
@@ -216,10 +208,9 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                             full_response += chunk
                             yield chunk
                     
-                    # FIX: Save interviewer_question for next question
                     state.answers.append({
                         "question_index": state.current_question_index,
-                        "interviewer_question": full_response,  # ADDED
+                        "interviewer_question": full_response,
                         "user_message": "",
                         "answer": "",
                         "timestamp": datetime.now().isoformat(),
@@ -229,8 +220,8 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                     return
                 
                 else:
-                    # Ask follow-up question
                     state.follow_up_count += 1
+                    await xano.save_workflow_state(state)
                     
                     interviewer = self.create_interviewer_agent(context, template.get("model", "gpt-4o"))
                     result = Runner.run_streamed(interviewer, "Student answer was incomplete. Ask a follow-up question to clarify.", context=context)
@@ -242,8 +233,15 @@ If follow_up_count >= max, set needs_clarification=false even if incomplete."""
                             full_response += chunk
                             yield chunk
                     
-                    # FIX: Save follow-up question too
-                    state.answers[-1]['follow_up_question'] = full_response  # ADDED
+                    state.answers.append({
+                        "question_index": state.current_question_index,
+                        "interviewer_question": full_response,
+                        "user_message": "",
+                        "answer": "",
+                        "timestamp": datetime.now().isoformat(),
+                        "evaluation": {},
+                        "is_follow_up": True
+                    })
                     await xano.save_workflow_state(state)
     
     async def run_evaluation(

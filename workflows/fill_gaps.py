@@ -201,6 +201,30 @@ Return JSON:
             
             context = WorkflowContext(state=state)
             
+            if len(state.answers) == 0:
+                tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
+                result = Runner.run_streamed(tutor, "", context=context)
+                
+                full_response = ""
+                async for event in result.stream_events():
+                    if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                        chunk = event.data.delta
+                        full_response += chunk
+                        yield chunk
+                
+                state.answers.append({
+                    "assignment_index": 0,
+                    "assignment": full_response,
+                    "answer": "",
+                    "timestamp": datetime.now().isoformat(),
+                    "graded": False,
+                    "waiting_for_answer": True,
+                    "user_message": user_message if user_message else "",
+                    "tutor_response": ""
+                })
+                await xano.save_workflow_state(state)
+                return
+            
             last_answer = state.answers[-1] if state.answers else {}
             
             if last_answer and last_answer.get('waiting_for_answer'):
@@ -213,7 +237,16 @@ Return JSON:
                 is_short_response = len(student_message.split()) <= 3 and any(indicator in student_message.lower() for indicator in short_response_indicators)
                 
                 if is_question or is_short_response:
-                    last_answer['user_message'] = user_message
+                    state.answers.append({
+                        "assignment_index": state.current_question_index,
+                        "assignment": last_answer.get('assignment', ''),
+                        "answer": "",
+                        "timestamp": datetime.now().isoformat(),
+                        "graded": False,
+                        "waiting_for_answer": True,
+                        "user_message": user_message,
+                        "tutor_response": ""
+                    })
                     
                     tutor = self.create_tutor_agent(context, specs, template.get("model", "gpt-4o"))
                     result = Runner.run_streamed(tutor, user_message, context=context)
@@ -225,7 +258,7 @@ Return JSON:
                             full_response += chunk
                             yield chunk
                     
-                    last_answer['tutor_response'] = full_response
+                    state.answers[-1]['tutor_response'] = full_response
                     await xano.save_workflow_state(state)
                     return
                 
@@ -367,7 +400,19 @@ Return JSON:
                         assignments_text += "\n"
                 
                 if completed_count == 0:
-                    return "No completed assignments found. The student hasn't provided any answers yet."
+                    return f"""You are an evaluator for an English learning assignment.
+
+IMPORTANT: No completed assignments were found in the student's workflow state.
+This means the student either:
+1. Has not submitted any answers yet
+2. Only engaged in conversation without completing actual assignments
+
+Please provide an evaluation report stating:
+- No graded assignments are available for evaluation
+- The student needs to complete at least one assignment before grading
+- Recommend the student return to complete the assignments
+
+Format as a brief evaluation report with a score of 0/{total_max_points} points."""
 
                 criteria_text = ""
                 for i, crit in enumerate(ctx.criteria):
@@ -396,14 +441,8 @@ Return JSON:
 # Your Task
 Based on the assignments above and the evaluation criteria, provide a comprehensive evaluation of the student's English performance.
 
-Focus on:
-1. Grammar accuracy
-2. Vocabulary usage
-3. Understanding of the learning goal
-4. Overall progress and patterns in errors
-
 For each criterion:
-1. Review the assignments
+1. Review the relevant assignments
 2. Assess how well the student met the criterion
 3. Assign a grade (0 to max_points for that criterion)
 4. Provide clear reasoning with specific examples

@@ -529,7 +529,19 @@ Return JSON:
                         assignments_text += "\n"
                 
                 if completed_count == 0:
-                    return "No completed assignments found. The student hasn't provided any answers yet."
+                    return f"""You are an evaluator for an English learning assignment.
+
+IMPORTANT: No completed assignments were found in the student's workflow state.
+This means the student either:
+1. Has not submitted any answers yet
+2. Only engaged in conversation without completing actual assignments
+
+Please provide an evaluation report stating:
+- No graded assignments are available for evaluation
+- The student needs to complete at least one assignment before grading
+- Recommend the student return to complete the assignments
+
+Format as a brief evaluation report with a score of 0/{total_max_points} points."""
 
                 criteria_text = ""
                 for i, crit in enumerate(ctx.criteria):

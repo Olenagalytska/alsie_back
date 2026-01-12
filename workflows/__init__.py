@@ -4,6 +4,7 @@ from .roleplay import RoleplayWorkflow
 from .fill_gaps import FillGapsWorkflow
 from .analogous import AnalogousWorkflow
 from .reflection import ReflectionWorkflow
+from .agent_builder import AgentBuilderWorkflow
 from .base import BaseWorkflow, WorkflowContext
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "FillGapsWorkflow",
     "AnalogousWorkflow",
     "ReflectionWorkflow",
+    "AgentBuilderWorkflow",
     "BaseWorkflow",
     "WorkflowContext",
 ]
@@ -27,4 +29,9 @@ WORKFLOW_REGISTRY = {
 }
 
 def get_workflow_class(template_id: int):
+    """Get workflow class by template_id."""
     return WORKFLOW_REGISTRY.get(template_id)
+
+def get_agent_builder_workflow():
+    """Get Agent Builder workflow class for OpenAI workflows."""
+    return AgentBuilderWorkflow

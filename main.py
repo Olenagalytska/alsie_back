@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 from models import StudentMessage, AssistantResponse, ChatStatus
 from xano_client import XanoClient
-from workflows import get_workflow_class
+from workflows import get_workflow_class, get_agent_builder_workflow
 
 load_dotenv()
 
@@ -19,7 +19,7 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
-app = FastAPI(title="EdTech AI Platform", version="3.0.0")
+app = FastAPI(title="EdTech AI Platform", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -41,7 +41,7 @@ xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)
 
 @app.get("/")
 async def root():
-    return {"status": "operational", "version": "3.0.0"}
+    return {"status": "operational", "version": "4.0.0"}
 
 
 @app.get("/health")
@@ -72,13 +72,18 @@ async def process_student_message(message: StudentMessage):
             print(f"Updating status from idle to started for ub_id: {message.ub_id}")
             await xano.update_chat_status(message.ub_id, status=ChatStatus.STARTED)
         
-        template_id = block["int_template_id"]
-        print(f"Template ID: {template_id}")
+        workflow_id = block.get("workflow_id")
         
-        workflow_class = get_workflow_class(template_id)
-        
-        if not workflow_class:
-            raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
+        if workflow_id:
+            print(f"Using Agent Builder workflow: {workflow_id}")
+            workflow_class = get_agent_builder_workflow()
+        else:
+            template_id = block["int_template_id"]
+            print(f"Template ID: {template_id}")
+            workflow_class = get_workflow_class(template_id)
+            
+            if not workflow_class:
+                raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
         
         print(f"Workflow class: {workflow_class.__name__}")
         workflow = workflow_class(Config.OPENAI_API_KEY)
@@ -98,6 +103,7 @@ async def process_student_message(message: StudentMessage):
             print(f"Full response length: {len(full_response)}")
             print(f"Full response: {full_response[:200]}..." if len(full_response) > 200 else f"Full response: {full_response}")
             
+            # Save to AIR table
             messages_data = await xano.get_messages(message.ub_id)
             last_air_id = messages_data[-1]["id"] if messages_data else 0
             
@@ -156,11 +162,16 @@ async def evaluate_chat(ub_id: int):
             except:
                 criteria = []
         
-        template_id = block["int_template_id"]
-        workflow_class = get_workflow_class(template_id)
+        workflow_id = block.get("workflow_id")
         
-        if not workflow_class:
-            raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
+        if workflow_id:
+            workflow_class = get_agent_builder_workflow()
+        else:
+            template_id = block["int_template_id"]
+            workflow_class = get_workflow_class(template_id)
+            
+            if not workflow_class:
+                raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
         
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
@@ -174,53 +185,50 @@ async def evaluate_chat(ub_id: int):
         
         print(f"Saving evaluation to Xano via update_ub endpoint...")
         
-        update_result = await xano.update_chat_status(ub_id, grade=evaluation_text, status=ChatStatus.FINISHED)
+        update_result = await xano.update_chat_status(ub_id, grade=evaluation_text, status=ChatStatus.GRADED)
         
-        if update_result:
-            print(f"Grade saved successfully: {update_result}")
-        else:
-            print(f"Grade save returned empty result")
+        grading_output = await xano.parse_and_save_grading_output(ub_id, evaluation_text, criteria)
         
         return {
             "evaluation": evaluation_text,
             "timestamp": datetime.now().isoformat(),
             "conversation_length": len(workflow_state.answers),
             "criteria_count": len(criteria),
-            "cached": False,
-            "grade_saved": bool(update_result)
+            "grading_output": grading_output
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"ERROR: {e}")
+        print(f"Evaluation error: {type(e).__name__}: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/chat/{ub_id}/state")
-async def get_workflow_state(ub_id: int):
+async def get_chat_state(ub_id: int):
+    """Get current workflow state for a chat session."""
     try:
-        state = await xano.get_workflow_state(ub_id)
-        if state:
-            return state.model_dump()
-        else:
-            return {"answers": [], "status": "active", "questions": []}
+        workflow_state = await xano.get_workflow_state(ub_id)
+        
+        if not workflow_state:
+            raise HTTPException(status_code=404, detail="No workflow state found")
+        
+        return {
+            "ub_id": workflow_state.ub_id,
+            "block_id": workflow_state.block_id,
+            "current_question_index": workflow_state.current_question_index,
+            "questions": workflow_state.questions,
+            "answers": workflow_state.answers,
+            "follow_up_count": workflow_state.follow_up_count,
+            "max_follow_ups": workflow_state.max_follow_ups,
+            "status": workflow_state.status,
+            "custom_data": workflow_state.custom_data
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"ERROR: {e}")
-        return {"answers": [], "status": "active", "questions": []}
-
-
-@app.get("/chat/{ub_id}/history")
-async def get_chat_history(ub_id: int):
-    try:
-        messages = await xano.get_messages(ub_id)
-        return {"messages": messages, "count": len(messages)}
-    except Exception as e:
+        print(f"Error getting chat state: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

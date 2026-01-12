@@ -27,6 +27,7 @@ app.add_middleware(
     allow_origins=[
         "https://www.alsie.app",
         "https://alsie.app",
+        "https://alsie-app.webflow.io",
         "http://localhost:3000",
         "http://localhost:8000"
     ],

@@ -4,11 +4,12 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from models import StudentMessage, AssistantResponse, ChatStatus
 from xano_client import XanoClient
-from workflows import get_workflow_class, get_agent_builder_workflow
+from workflows import get_workflow_class
 
 load_dotenv()
 
@@ -75,15 +76,17 @@ async def process_student_message(message: StudentMessage):
         workflow_id = block.get("workflow_id")
         
         if workflow_id:
-            print(f"Using Agent Builder workflow: {workflow_id}")
-            workflow_class = get_agent_builder_workflow()
-        else:
-            template_id = block["int_template_id"]
-            print(f"Template ID: {template_id}")
-            workflow_class = get_workflow_class(template_id)
-            
-            if not workflow_class:
-                raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
+            raise HTTPException(
+                status_code=400, 
+                detail="This block uses ChatKit workflow. Use /chatkit/session endpoint instead."
+            )
+        
+        template_id = block["int_template_id"]
+        print(f"Template ID: {template_id}")
+        workflow_class = get_workflow_class(template_id)
+        
+        if not workflow_class:
+            raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
         
         print(f"Workflow class: {workflow_class.__name__}")
         workflow = workflow_class(Config.OPENAI_API_KEY)
@@ -165,13 +168,16 @@ async def evaluate_chat(ub_id: int):
         workflow_id = block.get("workflow_id")
         
         if workflow_id:
-            workflow_class = get_agent_builder_workflow()
-        else:
-            template_id = block["int_template_id"]
-            workflow_class = get_workflow_class(template_id)
-            
-            if not workflow_class:
-                raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
+            raise HTTPException(
+                status_code=400, 
+                detail="Evaluation for ChatKit workflows is not supported yet."
+            )
+        
+        template_id = block["int_template_id"]
+        workflow_class = get_workflow_class(template_id)
+        
+        if not workflow_class:
+            raise HTTPException(status_code=400, detail=f"No workflow found for template {template_id}")
         
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
@@ -208,7 +214,6 @@ async def evaluate_chat(ub_id: int):
 
 @app.get("/chat/{ub_id}/state")
 async def get_chat_state(ub_id: int):
-    """Get current workflow state for a chat session."""
     try:
         workflow_state = await xano.get_workflow_state(ub_id)
         
@@ -231,4 +236,32 @@ async def get_chat_state(ub_id: int):
         raise
     except Exception as e:
         print(f"Error getting chat state: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ChatKitSessionRequest(BaseModel):
+    workflow_id: str
+    user_id: str = "anonymous"
+
+
+@app.post("/chatkit/session")
+async def create_chatkit_session(request: ChatKitSessionRequest):
+    try:
+        from openai import OpenAI
+        
+        client = OpenAI(api_key=Config.OPENAI_API_KEY)
+        
+        session = client.beta.chatkit.sessions.create(
+            user=request.user_id,
+            workflow={"id": request.workflow_id}
+        )
+        
+        return {
+            "client_secret": session.client_secret,
+            "session_id": session.id,
+            "expires_at": session.expires_at
+        }
+        
+    except Exception as e:
+        print(f"Error creating ChatKit session: {e}")
         raise HTTPException(status_code=500, detail=str(e))

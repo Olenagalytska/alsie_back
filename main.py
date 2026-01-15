@@ -107,7 +107,6 @@ async def process_student_message(message: StudentMessage):
             print(f"Full response length: {len(full_response)}")
             print(f"Full response: {full_response[:200]}..." if len(full_response) > 200 else f"Full response: {full_response}")
             
-            # Save to AIR table
             messages_data = await xano.get_messages(message.ub_id)
             last_air_id = messages_data[-1]["id"] if messages_data else 0
             
@@ -254,7 +253,14 @@ async def create_chatkit_session(request: ChatKitSessionRequest):
         
         session = client.beta.chatkit.sessions.create(
             user=request.user_id,
-            workflow={"id": request.workflow_id}
+            workflow={"id": request.workflow_id},
+            chatkit_configuration={
+                "file_upload": {
+                    "enabled": True,
+                    "max_file_size": 10,
+                    "max_files": 5
+                }
+            }
         )
         
         return {

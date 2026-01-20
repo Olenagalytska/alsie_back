@@ -1,9 +1,9 @@
 import os
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -20,7 +20,7 @@ class Config:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
-app = FastAPI(title="EdTech AI Platform", version="4.0.0")
+app = FastAPI(title="EdTech AI Platform", version="5.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +39,15 @@ app.add_middleware(
 )
 
 xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)
+
+chatkit_server = None
+
+def get_chatkit_server():
+    global chatkit_server
+    if chatkit_server is None:
+        from chatkit_server import AlsieChatKitServer
+        chatkit_server = AlsieChatKitServer(Config.OPENAI_API_KEY, xano)
+    return chatkit_server
 
 
 @app.get("/")
@@ -107,6 +116,7 @@ async def process_student_message(message: StudentMessage):
             print(f"Full response length: {len(full_response)}")
             print(f"Full response: {full_response[:200]}..." if len(full_response) > 200 else f"Full response: {full_response}")
             
+            # Save to AIR table
             messages_data = await xano.get_messages(message.ub_id)
             last_air_id = messages_data[-1]["id"] if messages_data else 0
             
@@ -253,14 +263,7 @@ async def create_chatkit_session(request: ChatKitSessionRequest):
         
         session = client.beta.chatkit.sessions.create(
             user=request.user_id,
-            workflow={"id": request.workflow_id},
-            chatkit_configuration={
-                "file_upload": {
-                    "enabled": True,
-                    "max_file_size": 10,
-                    "max_files": 5
-                }
-            }
+            workflow={"id": request.workflow_id}
         )
         
         return {
@@ -271,4 +274,36 @@ async def create_chatkit_session(request: ChatKitSessionRequest):
         
     except Exception as e:
         print(f"Error creating ChatKit session: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chatkit")
+async def chatkit_endpoint(request: Request):
+    try:
+        from chatkit.server import StreamingResult
+        from chatkit_server import RequestContext
+        
+        body = await request.body()
+        
+        ub_id = request.query_params.get("ub_id")
+        block_id = request.query_params.get("block_id")
+        user_id = request.query_params.get("user_id", "anonymous")
+        
+        context = RequestContext(
+            user_id=user_id,
+            ub_id=int(ub_id) if ub_id else None,
+            block_id=int(block_id) if block_id else None,
+        )
+        
+        server = get_chatkit_server()
+        result = await server.process(body, context)
+        
+        if isinstance(result, StreamingResult):
+            return StreamingResponse(result, media_type="text/event-stream")
+        return Response(content=result.json, media_type="application/json")
+        
+    except Exception as e:
+        print(f"ChatKit endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

@@ -5,7 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from chatkit.server import ChatKitServer, StreamingResult
-from chatkit.store import NotFoundError, Store, FileStore
+from chatkit.store import NotFoundError, Store
 from chatkit.types import (
     AssistantMessageContent,
     AssistantMessageItem,
@@ -119,7 +119,7 @@ class InMemoryStore(Store[RequestContext]):
         raise NotImplementedError()
 
 
-class DiskFileStore(FileStore):
+class DiskFileStore:
     def __init__(self, upload_dir: str = "/tmp/chatkit_uploads"):
         self.upload_dir = Path(upload_dir)
         self.upload_dir.mkdir(parents=True, exist_ok=True)

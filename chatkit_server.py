@@ -33,6 +33,7 @@ class InMemoryStore(Store[RequestContext]):
     def __init__(self):
         self.threads: dict[str, ThreadMetadata] = {}
         self.items: dict[str, list[ThreadItem]] = defaultdict(list)
+        self.attachments: dict[str, Attachment] = {}
     
     async def load_thread(self, thread_id: str, context: RequestContext) -> ThreadMetadata:
         if thread_id not in self.threads:
@@ -110,14 +111,15 @@ class InMemoryStore(Store[RequestContext]):
         return Page(data=data, has_more=has_more, after=next_after)
     
     async def save_attachment(self, attachment: Attachment, context: RequestContext) -> None:
-        raise NotImplementedError()
+        self.attachments[attachment.id] = attachment
     
     async def load_attachment(self, attachment_id: str, context: RequestContext) -> Attachment:
-        raise NotImplementedError()
+        if attachment_id not in self.attachments:
+            raise NotFoundError(f"Attachment {attachment_id} not found")
+        return self.attachments[attachment_id]
     
     async def delete_attachment(self, attachment_id: str, context: RequestContext) -> None:
-        raise NotImplementedError()
-
+        self.attachments.pop(attachment_id, None)
 
 class DiskFileStore:
     def __init__(self, upload_dir: str = "/tmp/chatkit_uploads"):

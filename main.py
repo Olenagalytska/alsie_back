@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from models import StudentMessage, AssistantResponse, ChatStatus
 from xano_client import XanoClient
 from workflows import get_workflow_class
+from fastapi import UploadFile, File
 
 load_dotenv()
 
@@ -240,39 +241,33 @@ async def create_chatkit_session(request: ChatKitSessionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chatkit/upload")
-async def chatkit_upload(request: Request):
+async def chatkit_upload(request: Request, file: UploadFile = File(...)):
     try:
         ub_id = request.query_params.get("ub_id")
         block_id = request.query_params.get("block_id")
         
-        form = await request.form()
-        file = form.get("file")
-        
-        if not file:
-            raise HTTPException(status_code=400, detail="No file provided")
-        
-        file_content = await file.read()
+        contents = await file.read()
         file_id = f"file_{ub_id}_{int(datetime.now().timestamp() * 1000)}"
         
         server = get_chatkit_server()
         
         await server.file_store.save_file(
             file_id=file_id,
-            content=file_content,
+            content=contents,
             metadata={
                 "name": file.filename,
                 "mime_type": file.content_type,
-                "size": len(file_content),
+                "size": len(contents),
                 "ub_id": ub_id,
                 "block_id": block_id
             }
         )
         
         return {
-            "file_id": file_id,
+            "id": file_id,
             "name": file.filename,
             "mime_type": file.content_type,
-            "size": len(file_content)
+            "type": "file"
         }
         
     except Exception as e:

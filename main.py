@@ -239,6 +239,47 @@ async def create_chatkit_session(request: ChatKitSessionRequest):
         print(f"Error creating ChatKit session: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/chatkit/upload")
+async def chatkit_upload(request: Request):
+    try:
+        ub_id = request.query_params.get("ub_id")
+        block_id = request.query_params.get("block_id")
+        
+        form = await request.form()
+        file = form.get("file")
+        
+        if not file:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        file_content = await file.read()
+        file_id = f"file_{ub_id}_{int(datetime.now().timestamp() * 1000)}"
+        
+        server = get_chatkit_server()
+        
+        await server.file_store.save_file(
+            file_id=file_id,
+            content=file_content,
+            metadata={
+                "name": file.filename,
+                "mime_type": file.content_type,
+                "size": len(file_content),
+                "ub_id": ub_id,
+                "block_id": block_id
+            }
+        )
+        
+        return {
+            "file_id": file_id,
+            "name": file.filename,
+            "mime_type": file.content_type,
+            "size": len(file_content)
+        }
+        
+    except Exception as e:
+        print(f"Upload error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/chatkit")
 async def chatkit_endpoint(request: Request):

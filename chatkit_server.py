@@ -151,6 +151,7 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
         store = InMemoryStore()
         file_store = DiskFileStore()
         super().__init__(store, file_store)
+        self.file_store = file_store
         self.openai_api_key = openai_api_key
         self.xano = xano_client
     

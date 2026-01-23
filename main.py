@@ -307,3 +307,28 @@ async def chatkit_endpoint(request: Request):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/chatkit/upload")
+async def chatkit_upload_file(request: Request):
+    try:
+        form = await request.form()
+        file = form.get("file")
+        ub_id = form.get("ub_id")
+        block_id = form.get("block_id")
+        
+        if not file:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        file_content = await file.read()
+        file_id = f"file_{ub_id}_{datetime.now().timestamp()}"
+        
+        return {
+            "file_id": file_id,
+            "name": file.filename,
+            "size": len(file_content),
+            "content_type": file.content_type
+        }
+        
+    except Exception as e:
+        print(f"File upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

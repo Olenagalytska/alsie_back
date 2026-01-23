@@ -2,9 +2,10 @@ from typing import Any, AsyncIterator
 from datetime import datetime
 from dataclasses import dataclass
 from collections import defaultdict
+from pathlib import Path
 
 from chatkit.server import ChatKitServer, StreamingResult
-from chatkit.store import NotFoundError, Store
+from chatkit.store import NotFoundError, Store, FileStore
 from chatkit.types import (
     AssistantMessageContent,
     AssistantMessageItem,
@@ -118,11 +119,38 @@ class InMemoryStore(Store[RequestContext]):
         raise NotImplementedError()
 
 
+class DiskFileStore(FileStore):
+    def __init__(self, upload_dir: str = "/tmp/chatkit_uploads"):
+        self.upload_dir = Path(upload_dir)
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        self.metadata_store = {}
+    
+    async def save_file(self, file_id: str, content: bytes, metadata: dict) -> None:
+        file_path = self.upload_dir / file_id
+        file_path.write_bytes(content)
+        self.metadata_store[file_id] = metadata
+    
+    async def load_file(self, file_id: str) -> tuple[bytes, dict]:
+        file_path = self.upload_dir / file_id
+        if not file_path.exists():
+            raise FileNotFoundError(f"File {file_id} not found")
+        content = file_path.read_bytes()
+        metadata = self.metadata_store.get(file_id, {})
+        return content, metadata
+    
+    async def delete_file(self, file_id: str) -> None:
+        file_path = self.upload_dir / file_id
+        if file_path.exists():
+            file_path.unlink()
+        self.metadata_store.pop(file_id, None)
+
+
 class AlsieChatKitServer(ChatKitServer[RequestContext]):
     
     def __init__(self, openai_api_key: str, xano_client):
         store = InMemoryStore()
-        super().__init__(store)
+        file_store = DiskFileStore()
+        super().__init__(store, file_store)
         self.openai_api_key = openai_api_key
         self.xano = xano_client
     
@@ -203,3 +231,12 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                     content=[AssistantMessageContent(text=f"Error: {str(e)}")],
                 )
             )
+    
+    async def to_message_content(self, input):
+        if hasattr(input, 'file_id'):
+            content, metadata = await self.file_store.load_file(input.file_id)
+            return {
+                "type": "text",
+                "text": f"[File: {metadata.get('name', 'unknown')}]"
+            }
+        raise NotImplementedError()

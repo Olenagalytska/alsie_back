@@ -52,7 +52,7 @@ def get_chatkit_server():
 
 @app.get("/")
 async def root():
-    return {"status": "operational", "version": "4.0.0"}
+    return {"status": "operational", "version": "5.0.0"}
 
 
 @app.get("/health")
@@ -113,75 +113,38 @@ async def process_student_message(message: StudentMessage):
                 yield chunk
             
             print(f"Stream complete. Total chunks: {chunk_count}")
-            print(f"Full response length: {len(full_response)}")
-            print(f"Full response: {full_response[:200]}..." if len(full_response) > 200 else f"Full response: {full_response}")
-            
-            # Save to AIR table
-            messages_data = await xano.get_messages(message.ub_id)
-            last_air_id = messages_data[-1]["id"] if messages_data else 0
-            
-            try:
-                await xano.save_message_pair(message.ub_id, message.content, full_response, last_air_id)
-                print("Message pair saved successfully")
-            except Exception as save_error:
-                print(f"Error saving message pair: {save_error}")
+            print(f"Full response length: {len(full_response)} characters")
+            print(f"=== END: Message processing for ub_id: {message.ub_id} ===\n")
         
-        print("Returning StreamingResponse")
-        return StreamingResponse(
-            generate(), 
-            media_type="text/plain",
-            headers={
-                "Cache-Control": "no-cache",
-                "X-Accel-Buffering": "no"
-            }
-        )
+        return StreamingResponse(generate(), media_type="text/plain")
         
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"ERROR: {type(e).__name__}: {str(e)}")
+        print(f"Error processing message: {type(e).__name__}: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/chat/{ub_id}/evaluate")
-async def evaluate_chat(ub_id: int):
+async def evaluate_conversation(ub_id: int):
     try:
+        print(f"Starting evaluation for ub_id: {ub_id}")
+        
         session = await xano.get_chat_session(ub_id)
-        
-        if session.get('grade'):
-            return {
-                "evaluation": session['grade'],
-                "timestamp": datetime.now().isoformat(),
-                "conversation_length": 0,
-                "criteria_count": 0,
-                "cached": True
-            }
-        
         block = await xano.get_block(session["block_id"])
         
-        eval_instructions = block.get("eval_instructions")
+        workflow_state = await xano.get_workflow_state(ub_id)
+        
+        if not workflow_state or not workflow_state.answers:
+            raise HTTPException(status_code=400, detail="No conversation to evaluate")
+        
+        eval_instructions = block.get("evaluation_instructions", "")
+        criteria = block.get("criteria", [])
+        
         if not eval_instructions:
             raise HTTPException(status_code=400, detail="No evaluation instructions configured")
-        
-        workflow_state = await xano.get_workflow_state(ub_id)
-        if not workflow_state:
-            raise HTTPException(status_code=404, detail="No workflow state found")
-        
-        import json
-        criteria = block.get("eval_crit_json", [])
-        if isinstance(criteria, str):
-            try:
-                criteria = json.loads(criteria)
-            except:
-                criteria = []
-        
-        workflow_id = block.get("workflow_id")
-        
-        if workflow_id:
-            raise HTTPException(
-                status_code=400, 
-                detail="Evaluation for ChatKit workflows is not supported yet."
-            )
         
         template_id = block["int_template_id"]
         workflow_class = get_workflow_class(template_id)
@@ -306,29 +269,4 @@ async def chatkit_endpoint(request: Request):
         print(f"ChatKit endpoint error: {e}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-    
-@app.post("/chatkit/upload")
-async def chatkit_upload_file(request: Request):
-    try:
-        form = await request.form()
-        file = form.get("file")
-        ub_id = form.get("ub_id")
-        block_id = form.get("block_id")
-        
-        if not file:
-            raise HTTPException(status_code=400, detail="No file provided")
-        
-        file_content = await file.read()
-        file_id = f"file_{ub_id}_{datetime.now().timestamp()}"
-        
-        return {
-            "file_id": file_id,
-            "name": file.filename,
-            "size": len(file_content),
-            "content_type": file.content_type
-        }
-        
-    except Exception as e:
-        print(f"File upload error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

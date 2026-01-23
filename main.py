@@ -263,15 +263,15 @@ async def chatkit_upload(request: Request, file: UploadFile = File(...)):
             }
         )
         
-        from chatkit.types import Attachment
-        attachment = Attachment(
+        from chatkit.types import FileAttachment
+        from chatkit_server import RequestContext
+        
+        attachment = FileAttachment(
             id=file_id,
             name=file.filename,
-            mime_type=file.content_type,
-            type="file"
+            mime_type=file.content_type or "application/octet-stream",
         )
         
-        from chatkit_server import RequestContext
         context = RequestContext(
             user_id="system",
             ub_id=int(ub_id) if ub_id else None,
@@ -283,7 +283,7 @@ async def chatkit_upload(request: Request, file: UploadFile = File(...)):
         return {
             "id": file_id,
             "name": file.filename,
-            "mime_type": file.content_type,
+            "mime_type": file.content_type or "application/octet-stream",
             "type": "file"
         }
         

@@ -28,7 +28,6 @@ class RequestContext:
 
 
 class InMemoryStore(Store[RequestContext]):
-    """Simple in-memory store for ChatKit threads and items."""
     
     def __init__(self):
         self.threads: dict[str, ThreadMetadata] = {}
@@ -109,7 +108,6 @@ class InMemoryStore(Store[RequestContext]):
         next_after = cursor_key(data[-1]) if has_more and data else None
         return Page(data=data, has_more=has_more, after=next_after)
     
-    # Attachments not implemented for now
     async def save_attachment(self, attachment: Attachment, context: RequestContext) -> None:
         raise NotImplementedError()
     
@@ -136,11 +134,18 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
     ) -> AsyncIterator[ThreadStreamEvent]:
         
         user_message = ""
+        files = []
+        
         if input and input.content:
             for content in input.content:
                 if hasattr(content, 'text'):
-                    user_message = content.text
-                    break
+                    user_message += content.text
+                elif hasattr(content, 'file'):
+                    files.append(content.file)
+        
+        if files:
+            file_names = [f.name for f in files]
+            user_message += f"\n\n[Attached files: {', '.join(file_names)}]"
         
         if not context.ub_id or not context.block_id:
             yield ThreadItemDoneEvent(

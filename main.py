@@ -12,6 +12,8 @@ from xano_client import XanoClient
 from workflows import get_workflow_class
 from fastapi import UploadFile, File
 
+import tiktoken
+
 load_dotenv()
 
 
@@ -19,6 +21,14 @@ class Config:
     XANO_BASE_URL = os.getenv("XANO_BASE_URL", "")
     XANO_API_KEY = os.getenv("XANO_API_KEY", "")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+
+def estimate_tokens(text: str, model: str = "gpt-4o") -> int:
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except:
+        return len(text) // 4
 
 
 app = FastAPI(title="EdTech AI Platform", version="5.0.0")
@@ -102,6 +112,11 @@ async def process_student_message(message: StudentMessage):
         print(f"Workflow class: {workflow_class.__name__}")
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
+        course_id = block.get("course_id") or session.get("course_id") or 0
+        user_id = session.get("user_id") or 0
+        block_id = block.get("id") or session.get("block_id")
+        model = template_data.get("model", "gpt-4o")
+        
         async def generate():
             full_response = ""
             print(f"Starting stream for ub_id: {message.ub_id}")
@@ -115,6 +130,22 @@ async def process_student_message(message: StudentMessage):
             
             print(f"Stream complete. Total chunks: {chunk_count}")
             print(f"Full response length: {len(full_response)} characters")
+            
+            input_tokens = estimate_tokens(message.content, model)
+            output_tokens = estimate_tokens(full_response, model)
+            
+            await xano.save_token_usage(
+                ub_id=message.ub_id,
+                block_id=block_id,
+                course_id=course_id,
+                user_id=user_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model=model,
+                operation_type="chat"
+            )
+            
+            print(f"Token usage saved: input={input_tokens}, output={output_tokens}")
             print(f"=== END: Message processing for ub_id: {message.ub_id} ===\n")
         
         return StreamingResponse(generate(), media_type="text/plain")
@@ -155,12 +186,14 @@ async def evaluate_conversation(ub_id: int):
         
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
+        model = block.get("model", "gpt-4o")
+        
         evaluation_text = await workflow.run_evaluation(
             ub_id=ub_id,
             workflow_state=workflow_state,
             eval_instructions=eval_instructions,
             criteria=criteria,
-            model=block.get("model", "gpt-4o")
+            model=model
         )
         
         print(f"Saving evaluation to Xano via update_ub endpoint...")
@@ -168,6 +201,25 @@ async def evaluate_conversation(ub_id: int):
         update_result = await xano.update_chat_status(ub_id, grade=evaluation_text, status=ChatStatus.GRADED)
         
         grading_output = await xano.parse_and_save_grading_output(ub_id, evaluation_text, criteria)
+        
+        course_id = block.get("course_id") or session.get("course_id") or 0
+        user_id = session.get("user_id") or 0
+        block_id = block.get("id") or session.get("block_id")
+        
+        eval_input = eval_instructions + str(criteria) + str(workflow_state.answers)
+        input_tokens = estimate_tokens(eval_input, model)
+        output_tokens = estimate_tokens(evaluation_text, model)
+        
+        await xano.save_token_usage(
+            ub_id=ub_id,
+            block_id=block_id,
+            course_id=course_id,
+            user_id=user_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
+            operation_type="evaluation"
+        )
         
         return {
             "evaluation": evaluation_text,
@@ -322,4 +374,44 @@ async def chatkit_endpoint(request: Request):
         print(f"ChatKit endpoint error: {e}")
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/usage/course/{course_id}")
+async def get_course_usage(course_id: int):
+    try:
+        usage = await xano.get_course_token_usage(course_id)
+        return usage
+    except Exception as e:
+        print(f"Error getting course usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/usage/course/{course_id}/by_block")
+async def get_course_usage_by_block(course_id: int):
+    try:
+        usage = await xano.get_course_token_usage_by_block(course_id)
+        return usage
+    except Exception as e:
+        print(f"Error getting course usage by block: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/usage/course/{course_id}/user/{user_id}")
+async def get_user_usage(course_id: int, user_id: int):
+    try:
+        usage = await xano.get_user_token_usage(course_id, user_id)
+        return usage
+    except Exception as e:
+        print(f"Error getting user usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/usage/course/{course_id}/period")
+async def get_course_usage_by_period(course_id: int, start_date: str, end_date: str):
+    try:
+        usage = await xano.get_course_token_usage_by_period(course_id, start_date, end_date)
+        return usage
+    except Exception as e:
+        print(f"Error getting course usage by period: {e}")
         raise HTTPException(status_code=500, detail=str(e))

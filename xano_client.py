@@ -185,3 +185,160 @@ class XanoClient:
             import traceback
             traceback.print_exc()
         return None
+
+    async def save_token_usage(
+        self,
+        ub_id: int,
+        block_id: int,
+        course_id: int,
+        user_id: int,
+        input_tokens: int,
+        output_tokens: int,
+        model: str = "gpt-4o",
+        operation_type: str = "chat"
+    ) -> Optional[Dict[str, Any]]:
+        data = {
+            "ub_id": ub_id,
+            "block_id": block_id,
+            "course_id": course_id,
+            "user_id": user_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "model": model,
+            "operation_type": operation_type
+        }
+        try:
+            response = await self.client.post(f"{self.base_url}/token_usage", json=data)
+            if response.status_code in [200, 201]:
+                return response.json()
+            else:
+                print(f"Save token usage error: {response.status_code}")
+        except Exception as e:
+            print(f"Token usage save error: {e}")
+        return None
+
+    async def get_course_token_usage(self, course_id: int) -> Dict[str, Any]:
+        try:
+            response = await self.client.get(f"{self.base_url}/token_usage/course/{course_id}")
+            if response.status_code == 200:
+                records = response.json()
+                total_input = sum(r.get("input_tokens", 0) for r in records)
+                total_output = sum(r.get("output_tokens", 0) for r in records)
+                total_tokens = sum(r.get("total_tokens", 0) for r in records)
+                total_requests = len(records)
+                cost_input = (total_input / 1000000) * 2.50
+                cost_output = (total_output / 1000000) * 10.00
+                estimated_cost_usd = round(cost_input + cost_output, 4)
+                return {
+                    "course_id": course_id,
+                    "total_input_tokens": total_input,
+                    "total_output_tokens": total_output,
+                    "total_tokens": total_tokens,
+                    "total_requests": total_requests,
+                    "estimated_cost_usd": estimated_cost_usd
+                }
+        except Exception as e:
+            print(f"Get course token usage error: {e}")
+        return {
+            "course_id": course_id,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 0,
+            "total_requests": 0,
+            "estimated_cost_usd": 0
+        }
+
+    async def get_course_token_usage_by_block(self, course_id: int) -> Dict[str, Any]:
+        try:
+            response = await self.client.get(f"{self.base_url}/token_usage/course/{course_id}/by_block")
+            if response.status_code == 200:
+                records = response.json()
+                by_block = {}
+                for r in records:
+                    bid = r.get("block_id")
+                    if bid not in by_block:
+                        by_block[bid] = {"block_id": bid, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "requests": 0}
+                    by_block[bid]["input_tokens"] += r.get("input_tokens", 0)
+                    by_block[bid]["output_tokens"] += r.get("output_tokens", 0)
+                    by_block[bid]["total_tokens"] += r.get("total_tokens", 0)
+                    by_block[bid]["requests"] += 1
+                total_tokens = sum(b["total_tokens"] for b in by_block.values())
+                return {
+                    "course_id": course_id,
+                    "total_tokens": total_tokens,
+                    "by_block": list(by_block.values())
+                }
+        except Exception as e:
+            print(f"Get course token usage by block error: {e}")
+        return {"course_id": course_id, "total_tokens": 0, "by_block": []}
+
+    async def get_user_token_usage(self, course_id: int, user_id: int) -> Dict[str, Any]:
+        try:
+            response = await self.client.get(f"{self.base_url}/token_usage/course/{course_id}/user/{user_id}")
+            if response.status_code == 200:
+                records = response.json()
+                total_input = sum(r.get("input_tokens", 0) for r in records)
+                total_output = sum(r.get("output_tokens", 0) for r in records)
+                total_tokens = sum(r.get("total_tokens", 0) for r in records)
+                total_requests = len(records)
+                return {
+                    "course_id": course_id,
+                    "user_id": user_id,
+                    "total_input_tokens": total_input,
+                    "total_output_tokens": total_output,
+                    "total_tokens": total_tokens,
+                    "total_requests": total_requests
+                }
+        except Exception as e:
+            print(f"Get user token usage error: {e}")
+        return {
+            "course_id": course_id,
+            "user_id": user_id,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 0,
+            "total_requests": 0
+        }
+
+    async def get_course_token_usage_by_period(
+        self,
+        course_id: int,
+        start_date: str,
+        end_date: str
+    ) -> Dict[str, Any]:
+        try:
+            response = await self.client.get(
+                f"{self.base_url}/token_usage/course/{course_id}/period",
+                params={"start_date": start_date, "end_date": end_date}
+            )
+            if response.status_code == 200:
+                records = response.json()
+                total_input = sum(r.get("input_tokens", 0) for r in records)
+                total_output = sum(r.get("output_tokens", 0) for r in records)
+                total_tokens = sum(r.get("total_tokens", 0) for r in records)
+                total_requests = len(records)
+                cost_input = (total_input / 1000000) * 2.50
+                cost_output = (total_output / 1000000) * 10.00
+                estimated_cost_usd = round(cost_input + cost_output, 4)
+                return {
+                    "course_id": course_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "total_input_tokens": total_input,
+                    "total_output_tokens": total_output,
+                    "total_tokens": total_tokens,
+                    "total_requests": total_requests,
+                    "estimated_cost_usd": estimated_cost_usd
+                }
+        except Exception as e:
+            print(f"Get course token usage by period error: {e}")
+        return {
+            "course_id": course_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "total_tokens": 0,
+            "total_requests": 0,
+            "estimated_cost_usd": 0
+        }

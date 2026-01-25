@@ -21,6 +21,15 @@ from chatkit.types import (
 from workflows import get_workflow_class
 
 
+def estimate_tokens(text: str, model: str = "gpt-4o") -> int:
+    try:
+        import tiktoken
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except:
+        return len(text) // 4
+
+
 @dataclass
 class RequestContext:
     user_id: str
@@ -221,6 +230,25 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                     content=[AssistantMessageContent(text=full_response)],
                 )
             )
+            
+            course_id = block.get("_lesson", {}).get("course_id") or block.get("_lesson", {}).get("_course", {}).get("id") or 0
+            user_id = int(context.user_id.split("_")[0]) if context.user_id and "_" in context.user_id else 0
+            model = template_data.get("model", "gpt-4o")
+            
+            input_tokens = estimate_tokens(user_message, model)
+            output_tokens = estimate_tokens(full_response, model)
+            
+            await self.xano.save_token_usage(
+                ub_id=context.ub_id,
+                block_id=context.block_id,
+                course_id=course_id,
+                user_id=user_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model=model,
+                operation_type="chatkit"
+            )
+            print(f"ChatKit token usage saved: input={input_tokens}, output={output_tokens}")
             
         except Exception as e:
             print(f"ChatKit respond error: {e}")

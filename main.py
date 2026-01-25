@@ -112,7 +112,7 @@ async def process_student_message(message: StudentMessage):
         print(f"Workflow class: {workflow_class.__name__}")
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
-        course_id = block.get("course_id") or session.get("course_id") or 0
+        course_id = block.get("_lesson", {}).get("course_id") or block.get("_lesson", {}).get("_course", {}).get("id") or session.get("course_id") or 0
         user_id = session.get("user_id") or 0
         block_id = block.get("id") or session.get("block_id")
         model = template_data.get("model", "gpt-4o")
@@ -202,7 +202,7 @@ async def evaluate_conversation(ub_id: int):
         
         grading_output = await xano.parse_and_save_grading_output(ub_id, evaluation_text, criteria)
         
-        course_id = block.get("course_id") or session.get("course_id") or 0
+        course_id = block.get("_lesson", {}).get("course_id") or block.get("_lesson", {}).get("_course", {}).get("id") or session.get("course_id") or 0
         user_id = session.get("user_id") or 0
         block_id = block.get("id") or session.get("block_id")
         

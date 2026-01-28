@@ -160,23 +160,44 @@ async def process_student_message(message: StudentMessage):
 
 
 @app.post("/chat/{ub_id}/evaluate")
-async def evaluate_conversation(ub_id: int):
+async def evaluate_chat(ub_id: int):
     try:
-        print(f"Starting evaluation for ub_id: {ub_id}")
-        
         session = await xano.get_chat_session(ub_id)
+        
+        if session.get('grade'):
+            return {
+                "evaluation": session['grade'],
+                "timestamp": datetime.now().isoformat(),
+                "conversation_length": 0,
+                "criteria_count": 0,
+                "cached": True
+            }
+        
         block = await xano.get_block(session["block_id"])
         
-        workflow_state = await xano.get_workflow_state(ub_id)
-        
-        if not workflow_state or not workflow_state.answers:
-            raise HTTPException(status_code=400, detail="No conversation to evaluate")
-        
-        eval_instructions = block.get("evaluation_instructions", "")
-        criteria = block.get("criteria", [])
-        
+        eval_instructions = block.get("eval_instructions")
         if not eval_instructions:
             raise HTTPException(status_code=400, detail="No evaluation instructions configured")
+        
+        workflow_state = await xano.get_workflow_state(ub_id)
+        if not workflow_state:
+            raise HTTPException(status_code=404, detail="No workflow state found")
+        
+        import json
+        criteria = block.get("eval_crit_json", [])
+        if isinstance(criteria, str):
+            try:
+                criteria = json.loads(criteria)
+            except:
+                criteria = []
+        
+        workflow_id = block.get("workflow_id")
+        
+        if workflow_id:
+            raise HTTPException(
+                status_code=400, 
+                detail="Evaluation for ChatKit workflows is not supported yet."
+            )
         
         template_id = block["int_template_id"]
         workflow_class = get_workflow_class(template_id)
@@ -186,14 +207,12 @@ async def evaluate_conversation(ub_id: int):
         
         workflow = workflow_class(Config.OPENAI_API_KEY)
         
-        model = block.get("model", "gpt-4o")
-        
         evaluation_text = await workflow.run_evaluation(
             ub_id=ub_id,
             workflow_state=workflow_state,
             eval_instructions=eval_instructions,
             criteria=criteria,
-            model=model
+            model=block.get("model", "gpt-4o")
         )
         
         print(f"Saving evaluation to Xano via update_ub endpoint...")
@@ -201,25 +220,6 @@ async def evaluate_conversation(ub_id: int):
         update_result = await xano.update_chat_status(ub_id, grade=evaluation_text, status=ChatStatus.GRADED)
         
         grading_output = await xano.parse_and_save_grading_output(ub_id, evaluation_text, criteria)
-        
-        course_id = block.get("_lesson", {}).get("course_id") or block.get("_lesson", {}).get("_course", {}).get("id") or session.get("course_id") or 0
-        user_id = session.get("user_id") or 0
-        block_id = block.get("id") or session.get("block_id")
-        
-        eval_input = eval_instructions + str(criteria) + str(workflow_state.answers)
-        input_tokens = estimate_tokens(eval_input, model)
-        output_tokens = estimate_tokens(evaluation_text, model)
-        
-        await xano.save_token_usage(
-            ub_id=ub_id,
-            block_id=block_id,
-            course_id=course_id,
-            user_id=user_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            model=model,
-            operation_type="evaluation"
-        )
         
         return {
             "evaluation": evaluation_text,
@@ -236,7 +236,6 @@ async def evaluate_conversation(ub_id: int):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/chat/{ub_id}/state")
 async def get_chat_state(ub_id: int):

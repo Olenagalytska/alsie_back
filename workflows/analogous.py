@@ -242,8 +242,14 @@ Return JSON:
     async def run_workflow_stream(self, block: Dict, template: Dict, user_message: str, ub_id: int, xano) -> AsyncGenerator[str, None]:
         with trace(f"Analogous-{ub_id}"):
             specifications = self.parse_specifications(block)
+
+            if specifications and not isinstance(specifications, list):
+                specifications = [specifications]
+            elif not specifications:
+                specifications = []
+
             specs = specifications[0] if specifications else {}
-            
+
             state = await self.load_or_create_state(ub_id, block["id"], specifications, xano)
             
             if state.status == "finished":

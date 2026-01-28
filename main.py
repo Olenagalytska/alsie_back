@@ -191,14 +191,6 @@ async def evaluate_chat(ub_id: int):
             except:
                 criteria = []
         
-        workflow_id = block.get("workflow_id")
-        
-        if workflow_id:
-            raise HTTPException(
-                status_code=400, 
-                detail="Evaluation for ChatKit workflows is not supported yet."
-            )
-        
         template_id = block["int_template_id"]
         workflow_class = get_workflow_class(template_id)
         
@@ -217,22 +209,26 @@ async def evaluate_chat(ub_id: int):
         
         print(f"Saving evaluation to Xano via update_ub endpoint...")
         
-        update_result = await xano.update_chat_status(ub_id, grade=evaluation_text, status=ChatStatus.GRADED)
+        update_result = await xano.update_chat_status(ub_id, grade=evaluation_text, status=ChatStatus.FINISHED)
         
-        grading_output = await xano.parse_and_save_grading_output(ub_id, evaluation_text, criteria)
+        if update_result:
+            print(f"Grade saved successfully: {update_result}")
+        else:
+            print(f"Grade save returned empty result")
         
         return {
             "evaluation": evaluation_text,
             "timestamp": datetime.now().isoformat(),
             "conversation_length": len(workflow_state.answers),
             "criteria_count": len(criteria),
-            "grading_output": grading_output
+            "cached": False,
+            "grade_saved": bool(update_result)
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Evaluation error: {type(e).__name__}: {str(e)}")
+        print(f"ERROR: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

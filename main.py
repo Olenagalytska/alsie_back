@@ -427,66 +427,28 @@ async def export_lesson_grades(lesson_id: int):
                 raise HTTPException(status_code=400, detail=f"Failed to fetch lesson progress: {response.text}")
             
             result = response.json()
-            students_data = result.get('progress_by_module', [])
+            csv_data = result.get('output_for_csv', [])
         
-        if not students_data or len(students_data) == 0:
-            raise HTTPException(status_code=404, detail="No student data found for this lesson")
-        
-        all_criteria_names = []
-        for student in students_data:
-            for block in student.get('blocks', []):
-                grading_output = block.get('grading_output')
-                if grading_output and isinstance(grading_output, list) and len(grading_output) > 0:
-                    for criterion in grading_output:
-                        criterion_name = criterion.get('criterion_name', 'Unnamed')
-                        if criterion_name not in all_criteria_names:
-                            all_criteria_names.append(criterion_name)
-                    break
-            if all_criteria_names:
-                break
-        
-        if not all_criteria_names:
-            raise HTTPException(status_code=404, detail="No grading criteria found")
+        if not csv_data or len(csv_data) == 0:
+            raise HTTPException(status_code=404, detail="No data found for this lesson")
         
         output = StringIO()
         writer = csv.writer(output)
         
-        headers = ['Student Name', 'Student Email']
-        for criterion_name in all_criteria_names:
-            headers.append(f'{criterion_name} summary')
-            headers.append(f'{criterion_name} grade')
-            headers.append(f'{criterion_name} grade comment')
-        
+        headers = ['Student Name', 'Student Email', 'Block Name', 'Status', 'Summary', 'Grade', 'Max Points', 'Comment']
         writer.writerow(headers)
         
-        for student in students_data:
-            student_name = student.get('student_name', 'Unknown')
-            student_email = student.get('student_email', 'No email')
-            
-            grading_data = {}
-            for block in student.get('blocks', []):
-                grading_output = block.get('grading_output')
-                if grading_output and isinstance(grading_output, list):
-                    for criterion in grading_output:
-                        criterion_name = criterion.get('criterion_name', 'Unnamed')
-                        grading_data[criterion_name] = {
-                            'summary': criterion.get('summary', ''),
-                            'grade': criterion.get('grade', ''),
-                            'comment': criterion.get('grading_comment', '')
-                        }
-                    break
-            
-            row = [student_name, student_email]
-            for criterion_name in all_criteria_names:
-                if criterion_name in grading_data:
-                    row.append(grading_data[criterion_name]['summary'])
-                    row.append(grading_data[criterion_name]['grade'])
-                    row.append(grading_data[criterion_name]['comment'])
-                else:
-                    row.append('')
-                    row.append('')
-                    row.append('')
-            
+        for row_data in csv_data:
+            row = [
+                row_data.get('student_name', ''),
+                row_data.get('student_email', ''),
+                row_data.get('block_name', ''),
+                row_data.get('status', ''),
+                row_data.get('_summary', ''),
+                row_data.get('_grade', ''),
+                row_data.get('_max_points', ''),
+                row_data.get('_grading_comment', '')
+            ]
             writer.writerow(row)
         
         output.seek(0)

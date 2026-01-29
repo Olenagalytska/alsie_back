@@ -424,9 +424,10 @@ async def export_lesson_grades(lesson_id: int):
             response = await client.get(url)
             
             if not response.is_success:
-                raise HTTPException(status_code=400, detail="Failed to fetch lesson progress")
+                raise HTTPException(status_code=400, detail=f"Failed to fetch lesson progress: {response.text}")
             
-            students_data = response.json()
+            result = response.json()
+            students_data = result.get('progress_by_module', [])
         
         if not students_data or len(students_data) == 0:
             raise HTTPException(status_code=404, detail="No student data found for this lesson")
@@ -434,7 +435,7 @@ async def export_lesson_grades(lesson_id: int):
         all_criteria_names = []
         for student in students_data:
             for block in student.get('blocks', []):
-                grading_output = block.get('grading_output', [])
+                grading_output = block.get('grading_output')
                 if grading_output and isinstance(grading_output, list) and len(grading_output) > 0:
                     for criterion in grading_output:
                         criterion_name = criterion.get('criterion_name', 'Unnamed')
@@ -464,7 +465,7 @@ async def export_lesson_grades(lesson_id: int):
             
             grading_data = {}
             for block in student.get('blocks', []):
-                grading_output = block.get('grading_output', [])
+                grading_output = block.get('grading_output')
                 if grading_output and isinstance(grading_output, list):
                     for criterion in grading_output:
                         criterion_name = criterion.get('criterion_name', 'Unnamed')

@@ -421,7 +421,7 @@ async def export_lesson_grades(lesson_id: int):
         url = f"{Config.XANO_BASE_URL}/api:DwPBcTo5/get_progress_by_lesson?lesson_id={lesson_id}"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers={"Authorization": f"Bearer {Config.XANO_API_KEY}"})
+            response = await client.get(url)
             
             if not response.is_success:
                 raise HTTPException(status_code=400, detail="Failed to fetch lesson progress")

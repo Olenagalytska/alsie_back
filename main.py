@@ -418,7 +418,7 @@ async def export_lesson_grades(lesson_id: int):
         from io import StringIO
         import httpx
         
-        url = f"{Config.XANO_BASE_URL}/api:DwPBcTo5/get_progress_by_lesson?lesson_id={lesson_id}"
+        url = f"{Config.XANO_BASE_URL}/get_progress_by_lesson?lesson_id={lesson_id}"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url)

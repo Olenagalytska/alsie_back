@@ -222,9 +222,9 @@ class XanoClient:
                 print("Could not extract numerical score from evaluation")
             
             grading_output = self._parse_grading_output(grade)
-            
-            if not grading_output:
-                print("Regex parsing failed, trying AI parsing as fallback")
+
+            if not grading_output or all(c.get('grade', 0) == 0 and c.get('max_points', 0) == 0 for c in grading_output):
+                print("Regex parsing failed or returned invalid grades, trying AI parsing as fallback")
                 grading_output = await self._parse_grading_with_ai(grade)
             
             if grading_output:

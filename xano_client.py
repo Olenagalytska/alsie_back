@@ -3,18 +3,33 @@ import json
 import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from pydantic import BaseModel
+from openai import OpenAI
 
 from workflows.base import WorkflowState
 from models import ChatStatus
 
 
+class CriterionGrade(BaseModel):
+    criterion_name: str
+    grade: float
+    max_points: float
+    summary: str
+    grading_comment: str
+
+class EvaluationParsed(BaseModel):
+    criteria: List[CriterionGrade]
+    total_score: float
+
+
 class XanoClient:
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(self, base_url: str, api_key: str, openai_api_key: str = None):
         self.base_url = base_url.rstrip('/')
         headers = {}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         self.client = httpx.AsyncClient(headers=headers, timeout=30.0)
+        self.openai_api_key = openai_api_key
     
     async def get_block(self, block_id: int) -> Dict[str, Any]:
         response = await self.client.get(f"{self.base_url}/block/{block_id}")
@@ -138,6 +153,52 @@ class XanoClient:
         
         return grading_output
     
+    async def _parse_grading_with_ai(self, evaluation_text: str) -> List[Dict[str, Any]]:
+        if not self.openai_api_key:
+            print("WARNING: No OpenAI API key available for AI parsing")
+            return []
+        
+        try:
+            client = OpenAI(api_key=self.openai_api_key)
+            
+            completion = client.beta.chat.completions.parse(
+                model="gpt-4o-2024-08-06",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Extract all criterion grades from the evaluation text. For each criterion, identify the name, grade received, maximum points possible, assessment summary, and grading comment/reasoning."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Parse this evaluation and extract all criteria with their grades:\n\n{evaluation_text}"
+                    }
+                ],
+                response_format=EvaluationParsed,
+            )
+            
+            parsed = completion.choices[0].message.parsed
+            
+            if not parsed or not parsed.criteria:
+                print("WARNING: AI parsing returned no criteria")
+                return []
+            
+            grading_output = []
+            for criterion in parsed.criteria:
+                grading_output.append({
+                    "criterion_name": criterion.criterion_name,
+                    "grade": int(criterion.grade) if criterion.grade == int(criterion.grade) else criterion.grade,
+                    "max_points": int(criterion.max_points) if criterion.max_points == int(criterion.max_points) else criterion.max_points,
+                    "summary": criterion.summary[:500] if criterion.summary else "",
+                    "grading_comment": criterion.grading_comment[:500] if criterion.grading_comment else ""
+                })
+            
+            print(f"AI successfully parsed {len(grading_output)} criteria")
+            return grading_output
+            
+        except Exception as e:
+            print(f"ERROR: AI parsing failed: {type(e).__name__}: {str(e)}")
+            return []
+    
     async def update_chat_status(
         self, 
         ub_id: int, 
@@ -161,6 +222,11 @@ class XanoClient:
                 print("Could not extract numerical score from evaluation")
             
             grading_output = self._parse_grading_output(grade)
+            
+            if not grading_output:
+                print("Regex parsing failed, trying AI parsing as fallback")
+                grading_output = await self._parse_grading_with_ai(grade)
+            
             if grading_output:
                 update_data["grading_output"] = grading_output
                 print(f"Parsed {len(grading_output)} criteria into grading_output")

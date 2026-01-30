@@ -49,7 +49,7 @@ app.add_middleware(
     max_age=3600,
 )
 
-xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY)
+xano = XanoClient(Config.XANO_BASE_URL, Config.XANO_API_KEY, Config.OPENAI_API_KEY)
 
 chatkit_server = None
 

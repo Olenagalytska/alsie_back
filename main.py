@@ -411,6 +411,40 @@ async def get_course_usage_by_period(course_id: int, start_date: str, end_date: 
         print(f"Error getting course usage by period: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.get("/chatkit/threads")
+async def get_chatkit_threads(ub_id: int):
+    try:
+        from chatkit_server import RequestContext
+        
+        context = RequestContext(
+            user_id=f"user_{ub_id}",
+            ub_id=ub_id,
+            block_id=None
+        )
+        
+        server = get_chatkit_server()
+        
+        threads_page = await server.store.load_threads(
+            limit=10,
+            after=None,
+            order="desc",
+            context=context
+        )
+        
+        threads = [
+            {
+                "id": thread.id,
+                "created_at": thread.created_at.isoformat() if hasattr(thread.created_at, 'isoformat') else str(thread.created_at)
+            }
+            for thread in threads_page.data
+        ]
+        
+        return {"threads": threads, "has_more": threads_page.has_more}
+        
+    except Exception as e:
+        print(f"Error getting ChatKit threads: {e}")
+        return {"threads": [], "has_more": False}
+
 @app.get("/chatkit/config/{ub_id}")
 async def get_chatkit_config(ub_id: int):
     try:

@@ -19,6 +19,8 @@ from chatkit.types import (
 )
 
 from workflows import get_workflow_class
+from workflows.base import WorkflowState
+from models import ChatStatus
 
 
 def estimate_tokens(text: str, model: str = "gpt-4o") -> int:
@@ -210,6 +212,12 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
             return
         
         try:
+            session = await self.xano.get_chat_session(context.ub_id)
+            
+            if session.get("status") == "idle":
+                print(f"[ChatKit] Updating status from idle to started for ub_id: {context.ub_id}")
+                await self.xano.update_chat_status(context.ub_id, status=ChatStatus.STARTED)
+            
             block = await self.xano.get_block(context.block_id)
             template_data = await self.xano.get_template(block["int_template_id"])
             
@@ -241,6 +249,34 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                     content=[AssistantMessageContent(text=full_response)],
                 )
             )
+            
+            state = await self.xano.get_workflow_state(context.ub_id)
+            if not state:
+                specifications = []
+                if hasattr(workflow, 'parse_specifications'):
+                    specifications = workflow.parse_specifications(block)
+                
+                state = WorkflowState(
+                    ub_id=context.ub_id,
+                    block_id=context.block_id,
+                    questions=[],
+                    answers=[],
+                    current_question_index=0,
+                    follow_up_count=0,
+                    max_follow_ups=3,
+                    status="active",
+                    custom_data={}
+                )
+            
+            state.answers.append({
+                "user_message": user_message,
+                "assistant_response": full_response,
+                "timestamp": datetime.now().isoformat(),
+                "chatkit": True
+            })
+            
+            await self.xano.save_workflow_state(state)
+            print(f"[ChatKit] Saved message to workflow_state for ub_id: {context.ub_id}")
             
             course_id = block.get("_lesson", {}).get("course_id") or block.get("_lesson", {}).get("_course", {}).get("id") or 0
             user_id = int(context.user_id.split("_")[0]) if context.user_id and "_" in context.user_id else 0

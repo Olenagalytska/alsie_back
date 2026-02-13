@@ -43,6 +43,7 @@ class InMemoryStore(Store[RequestContext]):
     
     def __init__(self):
         self.threads: dict[str, ThreadMetadata] = {}
+        self.thread_context: dict[str, int] = {}
         self.items: dict[str, dict[str, list[ThreadItem]]] = defaultdict(lambda: defaultdict(list))
         self.attachments: dict[str, Attachment] = {}
     
@@ -54,15 +55,29 @@ class InMemoryStore(Store[RequestContext]):
     async def load_thread(self, thread_id: str, context: RequestContext) -> ThreadMetadata:
         if thread_id not in self.threads:
             raise NotFoundError(f"Thread {thread_id} not found")
+        
+        stored_ub_id = self.thread_context.get(thread_id)
+        if stored_ub_id and context.ub_id and stored_ub_id != context.ub_id:
+            raise NotFoundError(f"Thread {thread_id} not found")
+        
         return self.threads[thread_id]
     
     async def save_thread(self, thread: ThreadMetadata, context: RequestContext) -> None:
         self.threads[thread.id] = thread
+        if context.ub_id:
+            self.thread_context[thread.id] = context.ub_id
     
     async def load_threads(
         self, limit: int, after: str | None, order: str, context: RequestContext
     ) -> Page[ThreadMetadata]:
-        threads = list(self.threads.values())
+        if context.ub_id:
+            threads = [
+                thread for thread_id, thread in self.threads.items()
+                if self.thread_context.get(thread_id) == context.ub_id
+            ]
+        else:
+            threads = list(self.threads.values())
+        
         return self._paginate(
             threads, after, limit, order, 
             sort_key=lambda t: t.created_at, 
@@ -108,6 +123,7 @@ class InMemoryStore(Store[RequestContext]):
     
     async def delete_thread(self, thread_id: str, context: RequestContext) -> None:
         self.threads.pop(thread_id, None)
+        self.thread_context.pop(thread_id, None)
         storage_key = self._get_storage_key(context)
         self.items[storage_key].pop(thread_id, None)
     
@@ -142,7 +158,7 @@ class InMemoryStore(Store[RequestContext]):
     
     async def delete_attachment(self, attachment_id: str, context: RequestContext) -> None:
         self.attachments.pop(attachment_id, None)
-
+        
 class DiskFileStore:
     def __init__(self, upload_dir: str = "/tmp/chatkit_uploads"):
         self.upload_dir = Path(upload_dir)

@@ -41,8 +41,13 @@ class InMemoryStore(Store[RequestContext]):
     
     def __init__(self):
         self.threads: dict[str, ThreadMetadata] = {}
-        self.items: dict[str, list[ThreadItem]] = defaultdict(list)
+        self.items: dict[str, dict[str, list[ThreadItem]]] = defaultdict(lambda: defaultdict(list))
         self.attachments: dict[str, Attachment] = {}
+    
+    def _get_storage_key(self, context: RequestContext) -> str:
+        if context.ub_id:
+            return f"ub_{context.ub_id}"
+        return "default"
     
     async def load_thread(self, thread_id: str, context: RequestContext) -> ThreadMetadata:
         if thread_id not in self.threads:
@@ -65,7 +70,8 @@ class InMemoryStore(Store[RequestContext]):
     async def load_thread_items(
         self, thread_id: str, after: str | None, limit: int, order: str, context: RequestContext
     ) -> Page[ThreadItem]:
-        items = self.items.get(thread_id, [])
+        storage_key = self._get_storage_key(context)
+        items = self.items[storage_key].get(thread_id, [])
         return self._paginate(
             items, after, limit, order,
             sort_key=lambda i: i.created_at,
@@ -75,12 +81,14 @@ class InMemoryStore(Store[RequestContext]):
     async def add_thread_item(
         self, thread_id: str, item: ThreadItem, context: RequestContext
     ) -> None:
-        self.items[thread_id].append(item)
+        storage_key = self._get_storage_key(context)
+        self.items[storage_key][thread_id].append(item)
     
     async def save_item(
         self, thread_id: str, item: ThreadItem, context: RequestContext
     ) -> None:
-        items = self.items[thread_id]
+        storage_key = self._get_storage_key(context)
+        items = self.items[storage_key][thread_id]
         for idx, existing in enumerate(items):
             if existing.id == item.id:
                 items[idx] = item
@@ -90,20 +98,23 @@ class InMemoryStore(Store[RequestContext]):
     async def load_item(
         self, thread_id: str, item_id: str, context: RequestContext
     ) -> ThreadItem:
-        for item in self.items.get(thread_id, []):
+        storage_key = self._get_storage_key(context)
+        for item in self.items[storage_key].get(thread_id, []):
             if item.id == item_id:
                 return item
         raise NotFoundError(f"Item {item_id} not found in thread {thread_id}")
     
     async def delete_thread(self, thread_id: str, context: RequestContext) -> None:
         self.threads.pop(thread_id, None)
-        self.items.pop(thread_id, None)
+        storage_key = self._get_storage_key(context)
+        self.items[storage_key].pop(thread_id, None)
     
     async def delete_thread_item(
         self, thread_id: str, item_id: str, context: RequestContext
     ) -> None:
-        self.items[thread_id] = [
-            item for item in self.items.get(thread_id, []) if item.id != item_id
+        storage_key = self._get_storage_key(context)
+        self.items[storage_key][thread_id] = [
+            item for item in self.items[storage_key].get(thread_id, []) if item.id != item_id
         ]
     
     def _paginate(self, rows: list, after: str | None, limit: int, order: str, sort_key, cursor_key):

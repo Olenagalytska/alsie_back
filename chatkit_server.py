@@ -158,7 +158,7 @@ class InMemoryStore(Store[RequestContext]):
     
     async def delete_attachment(self, attachment_id: str, context: RequestContext) -> None:
         self.attachments.pop(attachment_id, None)
-        
+
 class DiskFileStore:
     def __init__(self, upload_dir: str = "/tmp/chatkit_uploads"):
         self.upload_dir = Path(upload_dir)
@@ -334,3 +334,30 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                 "text": f"[File: {metadata.get('name', 'unknown')}]"
             }
         raise NotImplementedError()
+    
+    async def create_thread(self, context: RequestContext) -> ThreadMetadata:
+        if not context.ub_id or not context.block_id:
+            return await super().create_thread(context)
+        
+        try:
+            block = await self.xano.get_block(context.block_id)
+            template_data = await self.xano.get_template(block["int_template_id"])
+            
+            allow_multiple_chats = template_data.get("allow_multiple_chats", True)
+            
+            if not allow_multiple_chats:
+                existing_threads = await self.store.load_threads(
+                    limit=1,
+                    after=None,
+                    order="desc",
+                    context=context
+                )
+                
+                if existing_threads.data:
+                    existing_thread = existing_threads.data[0]
+                    print(f"[ChatKit] Reusing existing thread {existing_thread.id} for ub_id {context.ub_id}")
+                    return existing_thread
+        except Exception as e:
+            print(f"[ChatKit] Error checking allow_multiple_chats: {e}")
+        
+        return await super().create_thread(context)

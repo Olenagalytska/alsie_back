@@ -411,6 +411,19 @@ async def get_course_usage_by_period(course_id: int, start_date: str, end_date: 
         print(f"Error getting course usage by period: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     
+@app.get("/chatkit/config/{ub_id}")
+async def get_chatkit_config(ub_id: int):
+    try:
+        session = await xano.get_chat_session(ub_id)
+        block = await xano.get_block(session["block_id"])
+        template_data = await xano.get_template(block["int_template_id"])
+        
+        return {
+            "allow_multiple_chats": template_data.get("allow_multiple_chats", True)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
 @app.get("/lesson/{lesson_id}/export-grades")
 async def export_lesson_grades(lesson_id: int):
     try:

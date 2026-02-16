@@ -194,6 +194,128 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
         self.file_store = file_store
         self.openai_api_key = openai_api_key
         self.xano = xano_client
+        self.forced_thread_cache = {}
+    
+    async def get_or_create_thread(
+        self,
+        thread_id: str | None,
+        context: RequestContext,
+    ) -> ThreadMetadata:
+        
+        if not context.ub_id or not context.block_id:
+            return await super().get_or_create_thread(thread_id, context)
+        
+        try:
+            block = await self.xano.get_block(context.block_id)
+            template_data = await self.xano.get_template(block["int_template_id"])
+            
+            allow_multiple_chats = template_data.get("allow_multiple_chats", True)
+            
+            if not allow_multiple_chats:
+                cache_key = f"ub_{context.ub_id}"
+                
+                if cache_key in self.forced_thread_cache:
+                    forced_thread_id = self.forced_thread_cache[cache_key]
+                    print(f"[ChatKit] Using cached thread {forced_thread_id} for ub_id {context.ub_id}")
+                    try:
+                        thread = await self.store.load_thread(forced_thread_id, context)
+                        await self._restore_thread_history(thread, context)
+                        return thread
+                    except NotFoundError:
+                        pass
+                
+                existing_threads = await self.store.load_threads(
+                    limit=1,
+                    after=None,
+                    order="desc",
+                    context=context
+                )
+                
+                if existing_threads.data:
+                    existing_thread = existing_threads.data[0]
+                    self.forced_thread_cache[cache_key] = existing_thread.id
+                    print(f"[ChatKit] Forcing existing thread {existing_thread.id} for ub_id {context.ub_id}")
+                    await self._restore_thread_history(existing_thread, context)
+                    return existing_thread
+                
+        except Exception as e:
+            print(f"[ChatKit] Error in get_or_create_thread: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        new_thread = await super().get_or_create_thread(thread_id, context)
+        
+        await self._restore_thread_history(new_thread, context)
+        
+        if context.ub_id and not allow_multiple_chats:
+            cache_key = f"ub_{context.ub_id}"
+            self.forced_thread_cache[cache_key] = new_thread.id
+            print(f"[ChatKit] Created and cached first thread {new_thread.id} for ub_id {context.ub_id}")
+        
+        return new_thread
+    
+    async def _restore_thread_history(self, thread: ThreadMetadata, context: RequestContext):
+        try:
+            workflow_state = await self.xano.get_workflow_state(context.ub_id)
+            
+            if not workflow_state or not workflow_state.answers:
+                print(f"[ChatKit] No history to restore for ub_id {context.ub_id}")
+                return
+            
+            existing_items = await self.store.load_thread_items(
+                thread_id=thread.id,
+                after=None,
+                limit=100,
+                order="asc",
+                context=context
+            )
+            
+            if existing_items.data and len(existing_items.data) > 0:
+                print(f"[ChatKit] Thread already has {len(existing_items.data)} items, skipping restore")
+                return
+            
+            print(f"[ChatKit] Restoring {len(workflow_state.answers)} messages to thread {thread.id}")
+            
+            for idx, answer in enumerate(workflow_state.answers):
+                if not answer.get('chatkit'):
+                    continue
+                
+                user_msg = answer.get('user_message', '')
+                assistant_msg = answer.get('assistant_response', '')
+                timestamp_str = answer.get('timestamp', '')
+                
+                if timestamp_str:
+                    try:
+                        timestamp = datetime.fromisoformat(timestamp_str)
+                    except:
+                        timestamp = datetime.now()
+                else:
+                    timestamp = datetime.now()
+                
+                if user_msg:
+                    user_item = UserMessageItem(
+                        thread_id=thread.id,
+                        id=f"restored_user_{context.ub_id}_{idx}",
+                        created_at=timestamp,
+                        content=[{"type": "input_text", "text": user_msg}]
+                    )
+                    await self.store.add_thread_item(thread.id, user_item, context)
+                
+                if assistant_msg:
+                    assistant_item = AssistantMessageItem(
+                        thread_id=thread.id,
+                        id=f"restored_assistant_{context.ub_id}_{idx}",
+                        created_at=timestamp,
+                        content=[AssistantMessageContent(text=assistant_msg)]
+                    )
+                    await self.store.add_thread_item(thread.id, assistant_item, context)
+            
+            print(f"[ChatKit] Successfully restored history for thread {thread.id}")
+            
+        except Exception as e:
+            print(f"[ChatKit] Error restoring thread history: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def respond(
         self,

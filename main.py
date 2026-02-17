@@ -461,10 +461,8 @@ async def get_chatkit_config(ub_id: int):
 @app.get("/chatkit/thread/{ub_id}")
 async def get_chatkit_thread_id(ub_id: int):
     workflow_state = await xano.get_workflow_state(ub_id)
-    if workflow_state and workflow_state.custom_data:
-        thread_id = workflow_state.custom_data.get('chatkit_thread_id')
-        if thread_id:
-            return {"thread_id": thread_id}
+    if workflow_state and workflow_state.thread_id:
+        return {"thread_id": workflow_state.thread_id}
     return {"thread_id": None}
     
 @app.get("/lesson/{lesson_id}/export-grades")

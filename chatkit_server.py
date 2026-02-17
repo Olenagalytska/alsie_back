@@ -251,11 +251,13 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                 await self.store.save_thread(
                     ThreadMetadata(**thread.model_dump()), context=context
                 )
-                await self._restore_thread_history(
+                restored = await self._restore_thread_history(
                     ThreadMetadata(**thread.model_dump()), context
                 )
-                print(f"[ChatKit] Recreated thread {saved_thread_id} with history")
+                print(f"[ChatKit] Recreated thread {saved_thread_id} with {len(restored)} restored items")
                 yield ThreadCreatedEvent(thread=self._to_thread_response(thread))
+                for item in restored:
+                    yield ThreadItemDoneEvent(item=item)
                 user_message = await self._build_user_message_item(
                     request.params.input, thread, context
                 )
@@ -296,11 +298,15 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
             except Exception as e:
                 print(f"[ChatKit] Error saving thread_id: {e}")
 
-            await self._restore_thread_history(
+            restored = await self._restore_thread_history(
                 ThreadMetadata(**thread.model_dump()), context
             )
+        else:
+            restored = []
 
         yield ThreadCreatedEvent(thread=self._to_thread_response(thread))
+        for item in restored:
+            yield ThreadItemDoneEvent(item=item)
         user_message = await self._build_user_message_item(
             request.params.input, thread, context
         )
@@ -310,13 +316,14 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
             yield event
 
     async def _restore_thread_history(self, thread: ThreadMetadata, context: RequestContext):
+        restored_items = []
         try:
             workflow_state = await self.xano.get_workflow_state(context.ub_id)
-            
+
             if not workflow_state or not workflow_state.answers:
                 print(f"[ChatKit] No history to restore for ub_id {context.ub_id}")
-                return
-            
+                return restored_items
+
             existing_items = await self.store.load_thread_items(
                 thread_id=thread.id,
                 after=None,
@@ -324,21 +331,21 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                 order="asc",
                 context=context
             )
-            
+
             if existing_items.data and len(existing_items.data) > 0:
                 print(f"[ChatKit] Thread already has {len(existing_items.data)} items, skipping restore")
-                return
-            
+                return restored_items
+
             print(f"[ChatKit] Restoring {len(workflow_state.answers)} messages to thread {thread.id}")
-            
+
             for idx, answer in enumerate(workflow_state.answers):
                 if not answer.get('chatkit'):
                     continue
-                
+
                 user_msg = answer.get('user_message', '')
                 assistant_msg = answer.get('assistant_response', '')
                 timestamp_str = answer.get('timestamp', '')
-                
+
                 if timestamp_str:
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str)
@@ -346,7 +353,7 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                         timestamp = datetime.now()
                 else:
                     timestamp = datetime.now()
-                
+
                 if user_msg:
                     user_item = UserMessageItem(
                         thread_id=thread.id,
@@ -356,7 +363,8 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                         inference_options=InferenceOptions()
                     )
                     await self.store.add_thread_item(thread.id, user_item, context)
-                
+                    restored_items.append(user_item)
+
                 if assistant_msg:
                     assistant_item = AssistantMessageItem(
                         thread_id=thread.id,
@@ -365,13 +373,16 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                         content=[AssistantMessageContent(text=assistant_msg)]
                     )
                     await self.store.add_thread_item(thread.id, assistant_item, context)
-            
-            print(f"[ChatKit] Successfully restored history for thread {thread.id}")
-            
+                    restored_items.append(assistant_item)
+
+            print(f"[ChatKit] Successfully restored {len(restored_items)} items for thread {thread.id}")
+
         except Exception as e:
             print(f"[ChatKit] Error restoring thread history: {e}")
             import traceback
             traceback.print_exc()
+
+        return restored_items
     
     async def respond(
         self,

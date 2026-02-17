@@ -9,6 +9,7 @@ from chatkit.store import NotFoundError, Store
 from chatkit.types import (
     AssistantMessageContent,
     AssistantMessageItem,
+    InferenceOptions,
     StreamingReq,
     Thread,
     ThreadCreatedEvent,
@@ -351,7 +352,8 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                         thread_id=thread.id,
                         id=f"restored_user_{context.ub_id}_{idx}",
                         created_at=timestamp,
-                        content=[{"type": "input_text", "text": user_msg}]
+                        content=[{"type": "input_text", "text": user_msg}],
+                        inference_options=InferenceOptions()
                     )
                     await self.store.add_thread_item(thread.id, user_item, context)
                 

@@ -210,9 +210,9 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
             print(f"[ChatKit] workflow_state loaded: {workflow_state is not None}")
             
             saved_thread_id = None
-            if workflow_state and workflow_state.custom_data:
-                saved_thread_id = workflow_state.custom_data.get('chatkit_thread_id')
-                print(f"[ChatKit] Found saved_thread_id in custom_data: {saved_thread_id}")
+            if workflow_state and hasattr(workflow_state, 'thread_id') and workflow_state.thread_id:
+                saved_thread_id = workflow_state.thread_id
+                print(f"[ChatKit] Found saved thread_id: {saved_thread_id}")
             
             if saved_thread_id:
                 print(f"[ChatKit] Attempting to load saved thread: {saved_thread_id}")
@@ -270,11 +270,10 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                             custom_data={}
                         )
                     
-                    print(f"[ChatKit] Saving existing thread_id {existing_thread.id} to custom_data")
-                    workflow_state.custom_data['chatkit_thread_id'] = existing_thread.id
-                    print(f"[ChatKit] custom_data before save: {workflow_state.custom_data}")
+                    print(f"[ChatKit] Saving existing thread_id {existing_thread.id}")
+                    workflow_state.thread_id = existing_thread.id
                     await self.xano.save_workflow_state(workflow_state)
-                    print(f"[ChatKit] Successfully saved existing thread_id to workflow_state")
+                    print(f"[ChatKit] Successfully saved existing thread_id")
                     
                     return existing_thread
                 
@@ -305,9 +304,8 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                     custom_data={}
                 )
             
-            print(f"[ChatKit] About to save new thread_id {new_thread.id} to custom_data")
-            workflow_state.custom_data['chatkit_thread_id'] = new_thread.id
-            print(f"[ChatKit] custom_data before save: {workflow_state.custom_data}")
+            print(f"[ChatKit] About to save new thread_id {new_thread.id}")
+            workflow_state.thread_id = new_thread.id
             
             await self.xano.save_workflow_state(workflow_state)
             print(f"[ChatKit] Successfully saved new thread_id {new_thread.id} to workflow_state")
@@ -479,6 +477,10 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                     status="active",
                     custom_data={}
                 )
+            
+            if not hasattr(state, 'thread_id') or not state.thread_id:
+                state.thread_id = thread.id
+                print(f"[ChatKit] Added thread_id {thread.id} to workflow_state")
             
             state.answers.append({
                 "user_message": user_message,

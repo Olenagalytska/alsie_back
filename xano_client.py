@@ -70,7 +70,8 @@ class XanoClient:
             "follow_up_count": state.follow_up_count,
             "max_follow_ups": state.max_follow_ups,
             "status": state.status,
-            "custom_data": json.dumps(state.custom_data, ensure_ascii=False)
+            "custom_data": json.dumps(state.custom_data, ensure_ascii=False),
+            "thread_id": state.thread_id if hasattr(state, 'thread_id') else None
         }
         response = await self.client.post(f"{self.base_url}/save_workflow_state", json=data)
         return response.json() if response.status_code in [200, 201] else None

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from models import StudentMessage, AssistantResponse, ChatStatus
 from xano_client import XanoClient
 from workflows import get_workflow_class
+from workflows.base import WorkflowState
 from fastapi import UploadFile, File
 
 import tiktoken
@@ -156,6 +157,32 @@ async def process_student_message(message: StudentMessage):
         print(f"Error processing message: {type(e).__name__}: {str(e)}")
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/chat/{ub_id}/state")
+async def reset_chat_state(ub_id: int):
+    try:
+        existing = await xano.get_workflow_state(ub_id)
+        if not existing:
+            return {"status": "ok", "message": "No state to reset"}
+
+        empty_state = WorkflowState(
+            ub_id=ub_id,
+            block_id=existing.block_id,
+            questions=[],
+            answers=[],
+            current_question_index=0,
+            follow_up_count=0,
+            max_follow_ups=3,
+            status="active",
+            custom_data={},
+            thread_id=None
+        )
+        await xano.save_workflow_state(empty_state)
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Error resetting chat state: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -15,7 +15,6 @@ class WorkflowState(BaseModel):
     max_follow_ups: int = 3
     status: str = "active"
     custom_data: Dict[str, Any] = {}
-    thread_id: Optional[str] = None
 
 
 class WorkflowContext:
@@ -80,8 +79,7 @@ class BaseWorkflow(ABC):
                 follow_up_count=0,
                 status="active"
             )
-          
-        await xano.save_workflow_state(state)
+            await xano.save_workflow_state(state)
         
         return state
     

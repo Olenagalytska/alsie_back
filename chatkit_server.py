@@ -9,14 +9,9 @@ from chatkit.store import NotFoundError, Store
 from chatkit.types import (
     AssistantMessageContent,
     AssistantMessageItem,
-    InferenceOptions,
-    StreamingReq,
-    Thread,
-    ThreadCreatedEvent,
     ThreadItemDoneEvent,
     ThreadMetadata,
     ThreadStreamEvent,
-    ThreadsCreateReq,
     UserMessageItem,
     Attachment,
     Page,
@@ -199,131 +194,148 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
         self.file_store = file_store
         self.openai_api_key = openai_api_key
         self.xano = xano_client
+        self.forced_thread_cache = {}
     
-    async def _process_streaming_impl(
-        self, request: StreamingReq, context: RequestContext
-    ):
-        if not isinstance(request, ThreadsCreateReq):
-            async for event in super()._process_streaming_impl(request, context):
-                yield event
-            return
-
-        print(f"[ChatKit] threads.create: ub_id={context.ub_id}, block_id={context.block_id}")
-
-        saved_thread_id = None
-        workflow_state = None
-
-        if context.ub_id:
-            try:
-                workflow_state = await self.xano.get_workflow_state(context.ub_id)
-                if workflow_state and workflow_state.thread_id:
-                    saved_thread_id = workflow_state.thread_id
-                    print(f"[ChatKit] Found saved thread_id: {saved_thread_id}")
-            except Exception as e:
-                print(f"[ChatKit] Error loading workflow_state: {e}")
-
-        if saved_thread_id:
-            try:
-                thread_meta = await self.store.load_thread(saved_thread_id, context)
-                print(f"[ChatKit] Reusing existing thread {saved_thread_id}")
-                thread = Thread(
-                    id=thread_meta.id,
-                    created_at=thread_meta.created_at,
-                    title=thread_meta.title,
-                    items=Page(),
-                )
-                yield ThreadCreatedEvent(thread=self._to_thread_response(thread))
-                user_message = await self._build_user_message_item(
-                    request.params.input, thread, context
-                )
-                async for event in self._process_new_thread_item_respond(
-                    thread, user_message, context
-                ):
-                    yield event
-                return
-            except NotFoundError:
-                print(f"[ChatKit] Saved thread {saved_thread_id} not in store, recreating")
-                thread = Thread(
-                    id=saved_thread_id,
-                    created_at=datetime.now(),
-                    items=Page(),
-                )
-                await self.store.save_thread(
-                    ThreadMetadata(**thread.model_dump()), context=context
-                )
-                restored = await self._restore_thread_history(
-                    ThreadMetadata(**thread.model_dump()), context
-                )
-                print(f"[ChatKit] Recreated thread {saved_thread_id} with {len(restored)} restored items")
-                yield ThreadCreatedEvent(thread=self._to_thread_response(thread))
-                for item in restored:
-                    yield ThreadItemDoneEvent(item=item)
-                user_message = await self._build_user_message_item(
-                    request.params.input, thread, context
-                )
-                async for event in self._process_new_thread_item_respond(
-                    thread, user_message, context
-                ):
-                    yield event
-                return
-
-        thread_id = self.store.generate_thread_id(context)
-        thread = Thread(
-            id=thread_id,
-            created_at=datetime.now(),
-            items=Page(),
-        )
-        await self.store.save_thread(
-            ThreadMetadata(**thread.model_dump()), context=context
-        )
-        print(f"[ChatKit] Created new thread {thread_id}")
-
-        if context.ub_id:
-            try:
-                if not workflow_state:
-                    workflow_state = WorkflowState(
-                        ub_id=context.ub_id,
-                        block_id=context.block_id or 0,
-                        questions=[],
-                        answers=[],
-                        current_question_index=0,
-                        follow_up_count=0,
-                        max_follow_ups=3,
-                        status="active",
-                        custom_data={}
-                    )
-                workflow_state.thread_id = thread_id
-                await self.xano.save_workflow_state(workflow_state)
-                print(f"[ChatKit] Saved thread_id {thread_id} to workflow_state")
-            except Exception as e:
-                print(f"[ChatKit] Error saving thread_id: {e}")
-
-            restored = await self._restore_thread_history(
-                ThreadMetadata(**thread.model_dump()), context
-            )
-        else:
-            restored = []
-
-        yield ThreadCreatedEvent(thread=self._to_thread_response(thread))
-        for item in restored:
-            yield ThreadItemDoneEvent(item=item)
-        user_message = await self._build_user_message_item(
-            request.params.input, thread, context
-        )
-        async for event in self._process_new_thread_item_respond(
-            thread, user_message, context
-        ):
-            yield event
-
-    async def _restore_thread_history(self, thread: ThreadMetadata, context: RequestContext):
-        restored_items = []
+    async def create_thread(self, context: RequestContext) -> ThreadMetadata:
+        print(f"[ChatKit] create_thread called: ub_id={context.ub_id}, block_id={context.block_id}")
+        
+        if not context.ub_id or not context.block_id:
+            print(f"[ChatKit] Missing context, using super().create_thread")
+            return await super().create_thread(context)
+        
+        allow_multiple_chats = True
+        
         try:
             workflow_state = await self.xano.get_workflow_state(context.ub_id)
+            print(f"[ChatKit] workflow_state loaded: {workflow_state is not None}")
+            
+            saved_thread_id = None
+            if workflow_state and workflow_state.custom_data:
+                saved_thread_id = workflow_state.custom_data.get('chatkit_thread_id')
+                print(f"[ChatKit] Found saved_thread_id in custom_data: {saved_thread_id}")
+            
+            if saved_thread_id:
+                print(f"[ChatKit] Attempting to load saved thread: {saved_thread_id}")
+                try:
+                    thread = await self.store.load_thread(saved_thread_id, context)
+                    print(f"[ChatKit] Successfully loaded saved thread")
+                    await self._restore_thread_history(thread, context)
+                    return thread
+                except NotFoundError:
+                    print(f"[ChatKit] Saved thread {saved_thread_id} not found in store, will create new")
+            
+            block = await self.xano.get_block(context.block_id)
+            template_data = await self.xano.get_template(block["int_template_id"])
+            allow_multiple_chats = template_data.get("allow_multiple_chats", True)
+            
+            print(f"[ChatKit] allow_multiple_chats={allow_multiple_chats}")
+            
+            if not allow_multiple_chats:
+                cache_key = f"ub_{context.ub_id}"
+                
+                if cache_key in self.forced_thread_cache:
+                    forced_thread_id = self.forced_thread_cache[cache_key]
+                    print(f"[ChatKit] Using cached thread {forced_thread_id}")
+                    try:
+                        thread = await self.store.load_thread(forced_thread_id, context)
+                        await self._restore_thread_history(thread, context)
+                        return thread
+                    except NotFoundError:
+                        print(f"[ChatKit] Cached thread not found in store")
+                
+                existing_threads = await self.store.load_threads(
+                    limit=1,
+                    after=None,
+                    order="desc",
+                    context=context
+                )
+                
+                if existing_threads.data:
+                    existing_thread = existing_threads.data[0]
+                    self.forced_thread_cache[cache_key] = existing_thread.id
+                    print(f"[ChatKit] Found existing thread {existing_thread.id}")
+                    await self._restore_thread_history(existing_thread, context)
+                    
+                    if not workflow_state:
+                        print(f"[ChatKit] Creating new workflow_state")
+                        workflow_state = WorkflowState(
+                            ub_id=context.ub_id,
+                            block_id=context.block_id,
+                            questions=[],
+                            answers=[],
+                            current_question_index=0,
+                            follow_up_count=0,
+                            max_follow_ups=3,
+                            status="active",
+                            custom_data={}
+                        )
+                    
+                    print(f"[ChatKit] Saving existing thread_id {existing_thread.id} to custom_data")
+                    workflow_state.custom_data['chatkit_thread_id'] = existing_thread.id
+                    print(f"[ChatKit] custom_data before save: {workflow_state.custom_data}")
+                    await self.xano.save_workflow_state(workflow_state)
+                    print(f"[ChatKit] Successfully saved existing thread_id to workflow_state")
+                    
+                    return existing_thread
+                
+        except Exception as e:
+            print(f"[ChatKit] Error in create_thread: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print(f"[ChatKit] Creating new thread via super().create_thread")
+        new_thread = await super().create_thread(context)
+        print(f"[ChatKit] New thread created with id: {new_thread.id}")
+        
+        try:
+            print(f"[ChatKit] Loading workflow_state for saving thread_id")
+            workflow_state = await self.xano.get_workflow_state(context.ub_id)
+            
+            if not workflow_state:
+                print(f"[ChatKit] No workflow_state found, creating new one")
+                workflow_state = WorkflowState(
+                    ub_id=context.ub_id,
+                    block_id=context.block_id,
+                    questions=[],
+                    answers=[],
+                    current_question_index=0,
+                    follow_up_count=0,
+                    max_follow_ups=3,
+                    status="active",
+                    custom_data={}
+                )
+            
+            print(f"[ChatKit] About to save new thread_id {new_thread.id} to custom_data")
+            workflow_state.custom_data['chatkit_thread_id'] = new_thread.id
+            print(f"[ChatKit] custom_data before save: {workflow_state.custom_data}")
+            
+            await self.xano.save_workflow_state(workflow_state)
+            print(f"[ChatKit] Successfully saved new thread_id {new_thread.id} to workflow_state")
+            
+        except Exception as e:
+            print(f"[ChatKit] Error saving thread_id: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        print(f"[ChatKit] Restoring thread history")
+        await self._restore_thread_history(new_thread, context)
+        
+        if context.ub_id and not allow_multiple_chats:
+            cache_key = f"ub_{context.ub_id}"
+            self.forced_thread_cache[cache_key] = new_thread.id
+            print(f"[ChatKit] Cached new thread {new_thread.id}")
+        
+        print(f"[ChatKit] Returning thread {new_thread.id}")
+        return new_thread 
 
+    async def _restore_thread_history(self, thread: ThreadMetadata, context: RequestContext):
+        try:
+            workflow_state = await self.xano.get_workflow_state(context.ub_id)
+            
             if not workflow_state or not workflow_state.answers:
                 print(f"[ChatKit] No history to restore for ub_id {context.ub_id}")
-                return restored_items
-
+                return
+            
             existing_items = await self.store.load_thread_items(
                 thread_id=thread.id,
                 after=None,
@@ -331,21 +343,21 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                 order="asc",
                 context=context
             )
-
+            
             if existing_items.data and len(existing_items.data) > 0:
                 print(f"[ChatKit] Thread already has {len(existing_items.data)} items, skipping restore")
-                return restored_items
-
+                return
+            
             print(f"[ChatKit] Restoring {len(workflow_state.answers)} messages to thread {thread.id}")
-
+            
             for idx, answer in enumerate(workflow_state.answers):
                 if not answer.get('chatkit'):
                     continue
-
+                
                 user_msg = answer.get('user_message', '')
                 assistant_msg = answer.get('assistant_response', '')
                 timestamp_str = answer.get('timestamp', '')
-
+                
                 if timestamp_str:
                     try:
                         timestamp = datetime.fromisoformat(timestamp_str)
@@ -353,18 +365,16 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                         timestamp = datetime.now()
                 else:
                     timestamp = datetime.now()
-
+                
                 if user_msg:
                     user_item = UserMessageItem(
                         thread_id=thread.id,
                         id=f"restored_user_{context.ub_id}_{idx}",
                         created_at=timestamp,
-                        content=[{"type": "input_text", "text": user_msg}],
-                        inference_options=InferenceOptions()
+                        content=[{"type": "input_text", "text": user_msg}]
                     )
                     await self.store.add_thread_item(thread.id, user_item, context)
-                    restored_items.append(user_item)
-
+                
                 if assistant_msg:
                     assistant_item = AssistantMessageItem(
                         thread_id=thread.id,
@@ -373,16 +383,13 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                         content=[AssistantMessageContent(text=assistant_msg)]
                     )
                     await self.store.add_thread_item(thread.id, assistant_item, context)
-                    restored_items.append(assistant_item)
-
-            print(f"[ChatKit] Successfully restored {len(restored_items)} items for thread {thread.id}")
-
+            
+            print(f"[ChatKit] Successfully restored history for thread {thread.id}")
+            
         except Exception as e:
             print(f"[ChatKit] Error restoring thread history: {e}")
             import traceback
             traceback.print_exc()
-
-        return restored_items
     
     async def respond(
         self,
@@ -472,10 +479,6 @@ class AlsieChatKitServer(ChatKitServer[RequestContext]):
                     status="active",
                     custom_data={}
                 )
-            
-            if not hasattr(state, 'thread_id') or not state.thread_id:
-                state.thread_id = thread.id
-                print(f"[ChatKit] Added thread_id {thread.id} to workflow_state")
             
             state.answers.append({
                 "user_message": user_message,

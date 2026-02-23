@@ -95,10 +95,10 @@ async def process_student_message(message: StudentMessage):
             await xano.update_chat_status(message.ub_id, status=ChatStatus.STARTED)
         
         workflow_id = block.get("workflow_id")
-        
-        if workflow_id:
+
+        if workflow_id and workflow_id != 'self-hosted':
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="This block uses ChatKit workflow. Use /chatkit/session endpoint instead."
             )
         

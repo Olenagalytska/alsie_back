@@ -233,6 +233,38 @@ async def evaluate_chat(ub_id: int):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/lesson/{lesson_id}/evaluate-tests")
+async def evaluate_lesson_tests(lesson_id: int):
+    try:
+        response = await xano.client.get(
+            f"{xano.base_url}/test_ub",
+            params={"lesson_id": lesson_id}
+        )
+        if not response.is_success:
+            raise HTTPException(status_code=400, detail="Failed to fetch test blocks")
+
+        blocks_data = response.json().get("progress_by_module", [])
+
+        results = []
+        for block in blocks_data:
+            for test in block.get("tests", []):
+                if test.get("status") in ["finished", "started"]:
+                    ub_id = test["id"]
+                    try:
+                        result = await evaluate_chat(ub_id)
+                        results.append({"ub_id": ub_id, "status": "ok"})
+                    except Exception as e:
+                        results.append({"ub_id": ub_id, "status": "error", "error": str(e)})
+
+        return {"evaluated": len(results), "results": results}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/chat/{ub_id}/state")
 async def get_chat_state(ub_id: int):
     try:

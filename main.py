@@ -41,7 +41,7 @@ app.add_middleware(
         "https://alsie-app.webflow.io",
         "http://localhost:3000",
         "http://localhost:8000",
-        "https://olenka-alsie.webflow.io/"
+        "https://olenka-alsie.webflow.io"
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
